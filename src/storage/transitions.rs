@@ -10,52 +10,51 @@ impl Storage {
         let conn = self.conn.lock().expect("storage mutex poisoned");
         conn.execute("BEGIN IMMEDIATE", [])
             .context("begin confirming")?;
-        let res: Result<()> = (|| {
-            let current: (String, String) = conn
-                .query_row(
-                    "SELECT state, fingerprint FROM operations WHERE id = ?1",
-                    params![id],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                )
-                .with_context(|| format!("operation {id} not found for confirming"))?;
-            if current.0 != "confirmation_opened" {
-                bail!("operation is not awaiting confirmation");
-            }
-            let expires_at_str: String = conn.query_row(
-                "SELECT expires_at FROM operations WHERE id = ?1",
+        // Fetch current state inside transaction
+        let current: (String, String) = conn
+            .query_row(
+                "SELECT state, fingerprint FROM operations WHERE id = ?1",
                 params![id],
-                |row| row.get(0),
-            )?;
-            let expires_at = parse_time(&expires_at_str)?;
-            if Utc::now() >= expires_at {
-                conn.execute(
-                    "UPDATE operations SET state='expired', updated_at=?1 WHERE id=?2",
-                    params![now, id],
-                )?;
-                let detail = serde_json::json!({"reason":"ttl_expired_during_confirm"});
-                conn.execute(
-                    "INSERT INTO audit_events (operation_id, event_type, from_state, to_state, created_at, actor_source, detail, fingerprint) VALUES (?1,'expired',?2,'expired',?3,?4,?5,?6)",
-                    params![id, current.0, now, actor_source, detail.to_string(), current.1],
-                )?;
-                bail!("operation has expired");
-            }
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .with_context(|| format!("operation {id} not found for confirming"))?;
+        if current.0 != "confirmation_opened" {
+            let _ = conn.execute("ROLLBACK", []);
+            bail!("operation is not awaiting confirmation");
+        }
+        let expires_at_str: String = conn.query_row(
+            "SELECT expires_at FROM operations WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        let expires_at = parse_time(&expires_at_str)?;
+        if Utc::now() >= expires_at {
+            // Commit expiry before returning error so audit is durable.
             conn.execute(
-                "UPDATE operations SET state='confirming', updated_at=?1 WHERE id=?2 AND state='confirmation_opened'",
+                "UPDATE operations SET state='expired', updated_at=?1 WHERE id=?2",
                 params![now, id],
             )
-            .context("update to confirming")?;
-            let detail = serde_json::json!({"action":"confirm_start"});
+            .context("update to expired")?;
+            let detail = serde_json::json!({"reason":"ttl_expired_during_confirm"});
             conn.execute(
-                "INSERT INTO audit_events (operation_id, event_type, from_state, to_state, created_at, actor_source, detail, fingerprint) VALUES (?1,'confirm_start','confirmation_opened','confirming',?2,?3,?4,?5)",
-                params![id, now, actor_source, detail.to_string(), current.1],
+                "INSERT INTO audit_events (operation_id, event_type, from_state, to_state, created_at, actor_source, detail, fingerprint) VALUES (?1,'expired',?2,'expired',?3,?4,?5,?6)",
+                params![id, current.0, now, actor_source, detail.to_string(), current.1],
             )
-            .context("insert confirm_start audit")?;
-            Ok(())
-        })();
-        if res.is_err() {
-            let _ = conn.execute("ROLLBACK", []);
-            return res;
+            .context("insert expired audit")?;
+            conn.execute("COMMIT", []).context("commit expired")?;
+            bail!("operation has expired");
         }
+        conn.execute(
+            "UPDATE operations SET state='confirming', updated_at=?1 WHERE id=?2 AND state='confirmation_opened'",
+            params![now, id],
+        )
+        .context("update to confirming")?;
+        let detail = serde_json::json!({"action":"confirm_start"});
+        conn.execute(
+            "INSERT INTO audit_events (operation_id, event_type, from_state, to_state, created_at, actor_source, detail, fingerprint) VALUES (?1,'confirm_start','confirmation_opened','confirming',?2,?3,?4,?5)",
+            params![id, now, actor_source, detail.to_string(), current.1],
+        )
+        .context("insert confirm_start audit")?;
         conn.execute("COMMIT", []).context("commit confirming")?;
         Ok(())
     }
@@ -171,6 +170,51 @@ impl Storage {
             return res;
         }
         conn.execute("COMMIT", []).context("commit aborted")?;
+        Ok(())
+    }
+
+    /// Supervised desktop-only recovery for stale operations.
+    /// Only accepts terminal `unknown`/`expired` rows, never submits/confirms,
+    /// writes a distinct `stale_resolved` audit event, moves to `aborted`,
+    /// and is idempotently auditable. Caller must have verified the broker dialog is closed.
+    pub fn transition_to_stale_resolved(
+        &self,
+        id: &str,
+        actor_source: Option<&str>,
+        detail: &serde_json::Value,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let conn = self.conn.lock().expect("storage mutex poisoned");
+        conn.execute("BEGIN IMMEDIATE", [])
+            .context("begin stale_resolved")?;
+        let res: Result<()> = (|| {
+            let (state, fingerprint): (String, String) = conn.query_row(
+                "SELECT state, fingerprint FROM operations WHERE id=?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            if !matches!(state.as_str(), "unknown" | "expired") {
+                bail!("only unknown or expired operations can be stale-resolved");
+            }
+            // Ensure detail does not contain secrets (redacted at call site)
+            conn.execute(
+                "UPDATE operations SET state='aborted', updated_at=?1, result_summary=?2 WHERE id=?3",
+                params![now, detail.to_string(), id],
+            )
+            .context("update to aborted via stale_resolve")?;
+            conn.execute(
+                "INSERT INTO audit_events (operation_id, event_type, from_state, to_state, created_at, actor_source, detail, fingerprint) VALUES (?1,'stale_resolved',?2,'aborted',?3,?4,?5,?6)",
+                params![id, state, now, actor_source, detail.to_string(), fingerprint],
+            )
+            .context("insert stale_resolved audit")?;
+            Ok(())
+        })();
+        if res.is_err() {
+            let _ = conn.execute("ROLLBACK", []);
+            return res;
+        }
+        conn.execute("COMMIT", [])
+            .context("commit stale_resolved")?;
         Ok(())
     }
 }

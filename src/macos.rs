@@ -52,18 +52,9 @@ pub async fn run() -> Result<()> {
         )
         .context("failed to seed operator settings")?;
 
-    // Private-overlay with non-loopback must have bearer auth; fail early with clear message.
-    if config.network_mode == crate::config::NetworkMode::PrivateOverlay
-        && !config.bind_addr.ip().is_loopback()
-    {
-        let effective = resolve_effective_token(&config);
-        if effective.is_none() {
-            bail!(
-                "private-overlay mode with non-loopback bind {} requires bearer auth; set STOCK_OPERATOR_AUTH_TOKEN or save a token via desktop Keychain before using private network mode",
-                config.bind_addr
-            );
-        }
-    }
+    // Note: private-overlay with non-loopback and no token is allowed for desktop startup;
+    // the UI will show server stopped/missing token and allow saving a Keychain token.
+    // `stock-operator serve` and any listener still fail-closed without a token (checked below).
 
     // Ensure instance id exists (generated if not configured)
     let instance_id = storage
@@ -156,14 +147,8 @@ async fn launch_desktop(
     }
 
     let storage_arc = Arc::new(storage);
-    // Recreate service to share same storage_arc if needed; service already holds storage clone but ensure same instance.
-    // We reuse the existing service which already shares storage via Arc.
     let app_state =
         desktop::AppState::new(storage_arc.clone(), service.clone(), desktop_config.clone());
-
-    // Snapshot initial config for restart-required detection
-    let _initial = desktop_config.clone();
-
     let app_state_clone = app_state;
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
@@ -188,7 +173,8 @@ async fn launch_desktop(
             desktop::clear_token,
             desktop::test_stock_service_url,
             desktop::list_operations,
-            desktop::list_audit_events
+            desktop::list_audit_events,
+            desktop::resolve_stale_operation
         ])
         .setup(move |app| {
             let state = app.state::<desktop::AppState>();

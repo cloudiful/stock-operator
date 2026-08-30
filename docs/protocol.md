@@ -44,7 +44,7 @@ features that are not yet implemented.
   startup and an encrypted overlay or TLS reverse proxy; plaintext HTTP over the
   public network is rejected by policy. See Topology below.
 - **Storage**: `rusqlite 0.32.1` (bundled) behind synchronous repository
-  (`src/storage.rs`), migrations in `migrations/0001_initial.sql`. Tables:
+  (`src/storage/` module tree: `mod.rs`, `operations.rs`, `transitions.rs`, `audit.rs`, `settings.rs`, `redaction.rs`), migrations in `migrations/0001_initial.sql` + `0002_stale_resolve.sql` (adds `stale_resolved` audit event for supervised stale recovery). Tables:
   `operator_settings`, `operations` (durable live state + redacted payload,
   one-time confirmation tokens never persisted), `audit_events`. Extra key
   `network_mode` added in phase 4 (default `loopback`). Bearer tokens live in
@@ -137,6 +137,7 @@ save_token / clear_token  -> TokenStatus (Keychain, env-preferred)
 test_stock_service_url    -> { ok, status, message, latency_ms }
 list_operations           -> OperationHistoryResponse (paginated, redacted)
 list_audit_events         -> AuditHistoryResponse (paginated, filtered)
+resolve_stale_operation   -> { operation_id, previous_state, state, message }  # desktop-only, only unknown/expired -> aborted with stale_resolved audit; clears in-memory token; future prepares unblocked only after explicit call
 ```
 
 `save_settings` validates `network_mode` (`loopback` | `private-overlay`,
@@ -177,6 +178,7 @@ HTTP `GET /api/v1/operator/operations` is the primary UI path).
   it writes `abort` or `unknown` audits atomically. `unknown`/`expired`
   outcomes and any unresolved pending operation continue to block new `prepare`
   calls until explicitly resolved.
+- Desktop-only `resolve_stale_operation` (Tauri `resolve_stale_operation` + History UI "Resolve stale") is the supervised recovery for durable `unknown`/`expired` that permanently blocks new `prepare` calls (e.g., after restart the dialog is gone and the normal `abort` cannot drive the broker UI). It accepts only `unknown`/`expired`, never submits or confirms the broker dialog, requires explicit user acknowledgement that the dialog is closed, writes a distinct `stale_resolved` audit (state `unknown`/`expired` -> `aborted`) and clears any in-memory confirmation token. Future prepares are unblocked only after this explicit desktop action; there is no silent auto-resolve, drop, or time-window. HTTP/MCP `abort` remains broker-dialog-driven and unchanged; the recovery is intentionally exposed only to the local desktop.
 - TTL expiry is enforced in SQLite: `expire_stale_operations` marks
   `confirmation_opened`/`confirming` past `expires_at` as `expired` with
   `expired` audit. On startup, `reconcile_pending_operations` marks remaining
@@ -283,12 +285,9 @@ private-overlay with a non-loopback bind, otherwise `loopback_only`.
 
 ## CI and release
 
-- **CI**: `.github/workflows/ci.yml` (Ubuntu `latest`) and
-  `.forgejo/workflows/ci.yml` (intranet `aio`) run on PRs, pushes to `main`,
-  tags `v*`, and manual dispatch: `cargo fmt --all -- --check`,
-  `SQLX_OFFLINE=true cargo check --all-targets` / `cargo test --all-targets`,
-  and static validation of `tauri.conf.json`, `capabilities/default.json`,
-  `ui/`, `icons/`, `package.nu`, and migrations. No secrets are included.
+- **CI**: `.github/workflows/ci.yml` (macOS `macos-15`) and
+  `.forgejo/workflows/ci.yml` (intranet `aio` Linux) run on PRs, pushes to `main`,
+  tags `v*`, and manual dispatch. GitHub `macos-15` runs the full crate: `cargo fmt --all -- --check`, `SQLX_OFFLINE=true cargo check --all-targets` + `cargo test --all-targets` (97+ macOS tests) and static validation of `tauri.conf.json` (now requires `ipc:` in CSP and `CFBundleIconFile` without `LSUIElement`), `capabilities/default.json`, `ui/`, `icons/`, `package.nu` (absolute-path guard and empty-glob guard fixed, icon copied to `Resources`), and migrations. Forgejo on Linux `aio` has no macOS toolchain and would compile only the non-macOS stub with 0 tests, so it runs **only** formatting, static asset, and documentation validation with an explicit note that full Rust validation is on GitHub `macos-15`; it does not claim full Rust tests. No secrets are included.
 - **Release** on strict `v*` tags: `.github/workflows/release.yml` builds both
   macOS targets on GitHub-hosted runners with explicit triples
   `aarch64-apple-darwin` (`macos-15`, Apple Silicon M4) and

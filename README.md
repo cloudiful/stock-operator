@@ -221,11 +221,12 @@ existing window instead of competing with the running server.
   explicit safety acknowledgement.
 - **History** tab: paginated operation history (kind/state/time/payload summary),
   audit event view with operation filter, refresh and empty/loading/error states.
+  Stale `unknown`/`expired` rows show a "Resolve stale" button that requires explicit confirmation that the broker dialog is closed before writing the supervised `stale_resolved` audit.
 
 Tauri commands (`window.__TAURI__.core.invoke`) are narrow and typed:
 `get_settings`, `save_settings`, `get_runtime_status`, `get_token_status`,
 `save_token`, `clear_token`, `test_stock_service_url`, `list_operations`,
-`list_audit_events`. Secrets are never returned or stored in SQLite.
+`list_audit_events`, `resolve_stale_operation` (desktop-only recovery for `unknown`/`expired` → `aborted` with `stale_resolved` audit and token clear; requires explicit dialog-closed acknowledgement). Secrets are never returned or stored in SQLite.
 
 Ordinary settings are persisted in SQLite and reloaded on restart when env
 overrides are absent. URL, socket address, paths, network mode, and numeric
@@ -322,7 +323,7 @@ not sufficient because `window-ocr` and TCC permissions depend on the bundle.
 SQLite stores ordinary operator settings and durable operation history at
 `~/Library/Application Support/Stock Operator/operator.sqlite3` (configurable
 via `STOCK_OPERATOR_DB_PATH`). Parent directories are created and
-`migrations/0001_initial.sql` is applied at startup; a clear error is reported
+`migrations/0001_initial.sql` + `0002_stale_resolve.sql` are applied at startup; a clear error is reported
 if SQLite cannot initialize.
 
 Ordinary settings persisted through the desktop UI and SQLite APIs are:
@@ -350,7 +351,10 @@ holds a mutex while performing Accessibility UI calls; pending
 `ConfirmationOpened`/`Confirming` operations are reconciled on startup to
 `Expired` (if TTL elapsed) or `Unknown` so an abandoned broker dialog cannot
 silently resume, and any unresolved terminal `Unknown`/`Expired` operation still
-blocks new live operations until explicitly aborted.
+blocks new live operations until explicitly resolved via the desktop-only
+`resolve_stale_operation` Tauri command (History tab "Resolve stale" button) —
+which requires explicit acknowledgement that the broker dialog is closed, never
+submits/confirms the dialog, writes a distinct `stale_resolved` audit (`unknown`/`expired` → `aborted`) and clears the in-memory token. HTTP/MCP `abort` remains broker-dialog-driven; the recovery is intentionally desktop-only.
 
 Use an isolated path for development/tests:
 
@@ -398,9 +402,10 @@ operations use a two-step state machine: `prepare` opens and verifies the broker
 dialog, then returns a 30-second one-time confirmation token and payload
 fingerprint. `confirm` requires that token, fingerprint, the original
 `Idempotency-Key`, and an operation that is still awaiting confirmation. An
-unknown confirmation outcome is not retryable. Use the abort endpoint to close
-a still-open confirmation dialog. An unknown or abandoned live operation blocks
-new live operations until it is explicitly resolved.
+unknown confirmation outcome is not retryable. Use the `abort` endpoint to close
+a still-open confirmation dialog while the broker dialog is still present; after a
+restart the dialog is gone and `abort` will fail — use the desktop History tab
+"Resolve stale" (Tauri `resolve_stale_operation`, `unknown`/`expired` → `aborted` with `stale_resolved` audit) after verifying the dialog is closed. An unknown, expired, or otherwise unresolved operation blocks new prepares until explicitly resolved via the supervised desktop action.
 
 The history endpoints power the Tauri UI; they expose the SQLite-backed
 operation state after restart. The MCP read-only tool `list_recent_operations`
@@ -416,13 +421,7 @@ probe.
 
 ## CI and Release
 
-- **CI** (`.github/workflows/ci.yml` and `.forgejo/workflows/ci.yml`) runs on PRs,
-  pushes to `main`, tags `v*`, and manual dispatch. It installs stable Rust,
-  runs `cargo fmt --all -- --check`, `SQLX_OFFLINE=true cargo check --all-targets`,
-  `cargo test --all-targets`, and validates `tauri.conf.json`, `capabilities/default.json`,
-  `ui/` assets, icons, `package.nu`, and migrations. Forgejo CI is test-focused
-  on Linux (`aio`) because no macOS runner is currently provisioned on the
-  intranet; macOS packaging is exercised on GitHub.
+- **CI** — GitHub `.github/workflows/ci.yml` runs on `macos-15` (PRs, pushes to `main`, tags `v*`, manual dispatch) and exercises the full macOS crate: `cargo fmt --all -- --check`, `SQLX_OFFLINE=true cargo check --all-targets` + `cargo test --all-targets` (97+ tests), plus static validation of `tauri.conf.json` (IPC CSP `ipc:` + `http://ipc.localhost`, `CFBundleIconFile` without `LSUIElement`), `capabilities/default.json`, `ui/` assets, icons, `package.nu` (absolute-path and empty-glob guards, icon copy to `Resources`), and migrations (`0001` + `0002` `stale_resolved`). Forgejo `.forgejo/workflows/ci.yml` on Linux `aio` has no macOS toolchain and would compile only the non-macOS stub with 0 tests, so it runs **only** formatting, static asset, and docs validation with an explicit note that full Rust validation is on GitHub `macos-15`; it does not claim full Rust tests. No secrets are included in either workflow.
 
 - **Release** on strict `v*` tags (`.github/workflows/release.yml`) builds both
   macOS targets on GitHub-hosted macOS runners with explicit triples:

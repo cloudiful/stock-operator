@@ -157,13 +157,15 @@
                 <th>Fingerprint</th>
                 <th>Payload</th>
                 <th>Actor</th>
+                <th>Action</th>
               </tr>
             </thead>
             <tbody id="opsBody">
-              <tr><td colspan="6" class="empty">No operations</td></tr>
+              <tr><td colspan="7" class="empty">No operations</td></tr>
             </tbody>
           </table>
         </div>
+        <p class="hint">Stale <code>unknown</code>/<code>expired</code> operations block new prepares until explicitly resolved after you have closed the broker dialog. Use the Resolve button per row and confirm the dialog is closed.</p>
         <div class="pager">
           <button id="opsPrev">Prev</button>
           <span id="opsPage" class="hint">page 1</span>

@@ -22,8 +22,8 @@
     <string>__VERSION__</string>
     <key>LSMinimumSystemVersion</key>
     <string>26.0</string>
-    <key>LSUIElement</key>
-    <true/>
+    <key>CFBundleIconFile</key>
+    <string>icon</string>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright Cloudiful</string>
 </dict>

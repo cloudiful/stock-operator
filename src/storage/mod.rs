@@ -16,6 +16,7 @@ pub mod transitions;
 #[cfg(test)]
 mod tests;
 
+#[allow(unused_imports)]
 pub use audit::AuditEvent;
 pub use operations::OperationRecord;
 pub use redaction::{redacted_cancellation_summary, redacted_order_summary};
@@ -45,6 +46,7 @@ pub enum LiveOperationState {
 #[derive(Clone)]
 pub struct Storage {
     pub(crate) conn: Arc<Mutex<Connection>>,
+    #[allow(dead_code)]
     path: PathBuf,
 }
 
@@ -70,6 +72,7 @@ impl Storage {
         Ok(storage)
     }
 
+    #[allow(dead_code)]
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().context("failed to open in-memory SQLite")?;
         Self::configure(&conn)?;
@@ -93,10 +96,13 @@ impl Storage {
     }
 
     fn apply_migrations(&self) -> Result<()> {
-        let sql = include_str!("../../migrations/0001_initial.sql");
+        let sql1 = include_str!("../../migrations/0001_initial.sql");
+        let sql2 = include_str!("../../migrations/0002_stale_resolve.sql");
         let conn = self.conn.lock().expect("storage mutex poisoned");
-        conn.execute_batch(sql)
-            .context("failed to apply SQLite migrations")?;
+        conn.execute_batch(sql1)
+            .context("failed to apply SQLite migrations 0001")?;
+        conn.execute_batch(sql2)
+            .context("failed to apply SQLite migrations 0002")?;
         Ok(())
     }
 
@@ -204,6 +210,7 @@ impl Storage {
         Ok(count)
     }
 
+    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
     }

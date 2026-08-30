@@ -1,12 +1,13 @@
 name: CI (Forgejo)
 
-# Forgejo intranet CI — test-focused on Linux because no macOS runner is currently
-# provisioned on the intranet. macOS arm64/x86_64 packaging and .app bundling are
-# validated and released via GitHub Actions (macos-15 for aarch64 M4, macos-13 for x86_64).
+# Forgejo intranet CI — Linux `aio` has no macOS toolchain. Full Rust compile/test
+# is validated on GitHub Actions `macos-15` (see .github/workflows/ci.yml) where the
+# macOS cfg crate compiles and 97+ tests execute. Forgejo on Linux would compile only
+# the 6-line non-macOS stub with 0 tests, so it must not claim full Rust validation.
+# This workflow is therefore limited to formatting, static asset, and documentation
+# checks, with an explicit note about the macOS runner requirement.
 # If a self-hosted macOS runner is added, extend this workflow with a macOS job using
-# labels `macos-15` / `macos-13` or the intranet's macOS queue name and document it here.
-# Thin shared-action wrappers (e.g. build-rust-artifacts) do not fit this Tauri + Swift
-# OCR helper project, so steps use direct toolchain actions.
+# labels `macos-15` / `macos-13` and restore `cargo check --all-targets` / `cargo test --all-targets`.
 
 on:
   pull_request:
@@ -20,7 +21,7 @@ permissions:
 
 jobs:
   check:
-    name: check (fmt, test, tauri assets) — Linux
+    name: check (fmt, static assets, docs) — Linux aio
     runs-on: aio
     env:
       CARGO_TERM_COLOR: always
@@ -35,13 +36,7 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Cargo check
-        run: SQLX_OFFLINE=true cargo check --all-targets
-
-      - name: Cargo test
-        run: SQLX_OFFLINE=true cargo test --all-targets
-
-      - name: Validate Tauri config and static assets
+      - name: Validate Tauri config and static assets (Linux static-only)
         run: |
           set -euo pipefail
           echo "validating tauri.conf.json..."
@@ -55,15 +50,30 @@ jobs:
           test -f icons/icon.icns
           test -f macos/Info.plist.template
           test -f migrations/0001_initial.sql
+          test -f migrations/0002_stale_resolve.sql
           test -f package.nu
           grep -q "com.cloudiful.stock-operator" tauri.conf.json
           grep -q "Stock Operator" tauri.conf.json
-          echo "Tauri assets validated on Forgejo Linux runner"
+          grep -q "ipc:" tauri.conf.json || (echo "CSP must include ipc: for Tauri invoke"; exit 1)
+          if grep -q "LSUIElement" macos/Info.plist.template; then echo "LSUIElement must be removed for windowed app"; exit 1; fi
+          grep -q "CFBundleIconFile" macos/Info.plist.template
+          echo "Tauri static assets validated on Forgejo Linux runner (static-only)"
+
+      - name: Validate documentation and protocol paths
+        run: |
+          set -euo pipefail
+          grep -q "src/storage" docs/protocol.md || (echo "docs/protocol.md should reference src/storage module tree"; exit 1)
+          test -f README.md
+          grep -q "macos-15" .github/workflows/ci.yml
+          grep -q "stale_resolved" migrations/0002_stale_resolve.sql
+          echo "docs validated"
 
       - name: Check git diff does not contain whitespace errors
         run: git diff --check || echo "diff check warnings above (non-fatal)"
 
-      - name: Note on macOS packaging
+      - name: Note on macOS Rust validation
         run: |
-          echo "Forgejo CI is test-focused (Linux aio). macOS .app packaging with OCR helper requires macOS runners (Xcode + Swift + Tauri) and is performed on GitHub Actions."
-          echo "To enable macOS builds on Forgejo, provision a self-hosted macOS runner with Swift/Xcode and add a job with runs-on: macos-15 (arm64) and macos-13 (x86_64), then invoke 'nu package.nu --target aarch64-apple-darwin/x86_64-apple-darwin'."
+          echo "Forgejo CI on Linux aio is static-only: formatting, assets, docs."
+          echo "Full Rust crate (macOS cfg) compiles and 97+ tests run on GitHub Actions macos-15."
+          echo "Linux cargo check/test would compile only the non-macOS stub with 0 tests and is intentionally not run here."
+          echo "To enable full Rust validation on Forgejo, provision a self-hosted macOS runner with Swift/Xcode and add a job with runs-on: macos-15 (arm64) and macos-13 (x86_64), then invoke 'cargo check/test --all-targets'."

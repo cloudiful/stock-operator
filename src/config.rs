@@ -1,10 +1,14 @@
-use std::{
-    env,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    path::{Path, PathBuf},
-};
+use std::{env, net::SocketAddr, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
+
+pub mod network;
+pub mod paths;
+pub use network::{NetworkMode, is_private_ip, validate_bind_for_mode};
+pub(crate) use network::{resolve_network_mode_env, resolve_network_mode_with_storage};
+pub(crate) use paths::{bounded_env_usize, normalize_path};
+#[allow(unused_imports)]
+pub use paths::{default_db_path, resolve_db_path};
 
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:5190";
 const DEFAULT_MCP_PATH: &str = "/mcp";
@@ -12,45 +16,6 @@ const DEFAULT_TARGET_BUNDLE_ID: &str = "com.citics.mac.tdx";
 const DEFAULT_TARGET_PROCESS_NAME: &str = "中信证券网上交易";
 const DEFAULT_MAX_DEPTH: usize = 6;
 const DEFAULT_MAX_NODES: usize = 300;
-const DEFAULT_NETWORK_MODE: &str = "loopback";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NetworkMode {
-    Loopback,
-    PrivateOverlay,
-}
-
-impl NetworkMode {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Loopback => "loopback",
-            Self::PrivateOverlay => "private-overlay",
-        }
-    }
-    pub fn parse(raw: &str) -> Result<Self, String> {
-        let v = raw.trim().to_ascii_lowercase();
-        match v.as_str() {
-            "loopback" | "loopback-only" | "loopback_only" => Ok(Self::Loopback),
-            "private" | "private-overlay" | "private_overlay" | "overlay" | "tailscale"
-            | "wireguard" => Ok(Self::PrivateOverlay),
-            "" => Err("network mode is required".to_string()),
-            _ => Err(format!(
-                "unknown network mode '{}'; expected 'loopback' or 'private-overlay'",
-                raw.trim()
-            )),
-        }
-    }
-}
-impl std::fmt::Display for NetworkMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-impl Default for NetworkMode {
-    fn default() -> Self {
-        Self::Loopback
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct OperatorConfig {
@@ -68,6 +33,7 @@ pub struct OperatorConfig {
 }
 
 impl OperatorConfig {
+    #[allow(dead_code)]
     pub fn from_env() -> Result<Self> {
         let network_mode = resolve_network_mode_env()?;
         let bind_addr = env::var("STOCK_OPERATOR_BIND_ADDR")
@@ -80,7 +46,6 @@ impl OperatorConfig {
             .ok()
             .filter(|value| !value.trim().is_empty());
 
-        // Private overlay with non-loopback requires bearer auth at startup (env).
         if network_mode == NetworkMode::PrivateOverlay
             && !bind_addr.ip().is_loopback()
             && auth_token.is_none()
@@ -320,139 +285,10 @@ impl OperatorConfig {
         format!("http://{}{}", self.bind_addr, self.mcp_path)
     }
 
+    #[allow(dead_code)]
     pub fn db_path_display(&self) -> String {
         self.db_path.display().to_string()
     }
-}
-
-fn resolve_network_mode_env() -> Result<NetworkMode> {
-    if let Ok(raw) = env::var("STOCK_OPERATOR_NETWORK_MODE") {
-        let trimmed = raw.trim();
-        if !trimmed.is_empty() {
-            return NetworkMode::parse(trimmed).map_err(|e| anyhow::anyhow!(e));
-        }
-    }
-    Ok(NetworkMode::Loopback)
-}
-
-fn resolve_network_mode_with_storage(storage: &crate::storage::Storage) -> Result<NetworkMode> {
-    if let Ok(raw) = env::var("STOCK_OPERATOR_NETWORK_MODE") {
-        let trimmed = raw.trim();
-        if !trimmed.is_empty() {
-            return NetworkMode::parse(trimmed).map_err(|e| anyhow::anyhow!(e));
-        }
-    }
-    if let Some(raw) = storage
-        .get_setting("network_mode")
-        .ok()
-        .flatten()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-    {
-        return NetworkMode::parse(&raw).map_err(|e| anyhow::anyhow!(e));
-    }
-    Ok(NetworkMode::Loopback)
-}
-
-pub fn validate_bind_for_mode(addr: SocketAddr, mode: NetworkMode) -> Result<(), String> {
-    let ip = addr.ip();
-    if ip.is_unspecified() {
-        return Err(format!(
-            "bind address {addr} is unspecified (0.0.0.0 or ::); public exposure is not allowed"
-        ));
-    }
-    if ip.is_loopback() {
-        return Ok(());
-    }
-    match mode {
-        NetworkMode::Loopback => Err(format!(
-            "bind address {addr} is not loopback; loopback-only mode requires 127.0.0.1 or ::1. Set STOCK_OPERATOR_NETWORK_MODE=private-overlay for private network use"
-        )),
-        NetworkMode::PrivateOverlay => {
-            if is_private_ip(ip) {
-                Ok(())
-            } else {
-                Err(format!(
-                    "bind address {addr} is not a private network address; private-overlay mode permits only loopback or private addresses (RFC1918 10/8,172.16/12,192.168/16, CGNAT 100.64/10, ULA fc00::/7, link-local). Public addresses are rejected"
-                ))
-            }
-        }
-    }
-}
-
-pub fn is_private_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            if v4.is_private() || v4.is_link_local() {
-                return true;
-            }
-            // CGNAT 100.64.0.0/10 and Tailscale range
-            let octets = v4.octets();
-            if octets[0] == 100 && (64..=127).contains(&octets[1]) {
-                return true;
-            }
-            false
-        }
-        IpAddr::V6(v6) => {
-            if v6.is_loopback() || v6.is_unspecified() {
-                return false;
-            }
-            v6.is_unique_local() || v6.is_unicast_link_local()
-        }
-    }
-}
-
-// Allow checking private for socket check without exposing Ipv4
-#[allow(dead_code)]
-pub fn is_cgnat(v4: Ipv4Addr) -> bool {
-    let o = v4.octets();
-    o[0] == 100 && (64..=127).contains(&o[1])
-}
-
-pub fn resolve_db_path() -> PathBuf {
-    if let Ok(overridden) = env::var("STOCK_OPERATOR_DB_PATH") {
-        let trimmed = overridden.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
-        }
-    }
-    default_db_path()
-}
-
-pub fn default_db_path() -> PathBuf {
-    if let Ok(home) = env::var("HOME") {
-        if !home.trim().is_empty() {
-            return Path::new(&home)
-                .join("Library")
-                .join("Application Support")
-                .join("Stock Operator")
-                .join("operator.sqlite3");
-        }
-    }
-    if let Ok(xdg) = env::var("XDG_DATA_HOME") {
-        if !xdg.trim().is_empty() {
-            return Path::new(&xdg)
-                .join("stock-operator")
-                .join("operator.sqlite3");
-        }
-    }
-    PathBuf::from("operator.sqlite3")
-}
-
-pub(crate) fn normalize_path(value: &str) -> String {
-    let value = value.trim();
-    if value.is_empty() || value == "/" {
-        return "/".to_string();
-    }
-    format!("/{}", value.trim_matches('/'))
-}
-
-fn bounded_env_usize(key: &str, default: usize, min: usize, max: usize) -> usize {
-    env::var(key)
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(default)
-        .clamp(min, max)
 }
 
 #[cfg(test)]

@@ -10,6 +10,7 @@ fn normalize_path(value: &str) -> String {
     format!("/{}", value.trim_matches('/'))
 }
 
+#[allow(dead_code)]
 pub fn validate_bind_addr(addr: &str) -> Result<SocketAddr, String> {
     validate_bind_addr_for_mode(addr, &NetworkMode::Loopback.to_string())
 }
@@ -32,6 +33,7 @@ pub fn validate_network_mode(raw: &str) -> Result<String, String> {
     Ok(mode.as_str().to_string())
 }
 
+#[allow(dead_code)]
 pub fn requires_private_ack(mode_raw: &str, bind_raw: &str) -> bool {
     let Ok(mode) = NetworkMode::parse(mode_raw) else {
         return false;
@@ -129,6 +131,7 @@ pub fn validate_max_nodes(v: usize) -> Result<usize, String> {
 }
 
 // Re-export helper for tests that want direct ip check
+#[allow(dead_code, unused_imports)]
 pub use crate::config::is_private_ip as is_private_network_ip;
 
 #[cfg(test)]

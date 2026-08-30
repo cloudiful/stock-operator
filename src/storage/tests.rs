@@ -220,4 +220,152 @@ mod integration {
         assert_eq!(op_future.state, super::super::LiveOperationState::Unknown);
         assert_eq!(op_past.state, super::super::LiveOperationState::Expired);
     }
+
+    #[test]
+    fn stale_resolve_only_accepts_unknown_expired() {
+        // Reject confirmation_opened in isolated storage
+        {
+            let storage = Storage::open_in_memory().unwrap();
+            let now = Utc::now();
+            let expires = now + chrono::Duration::seconds(30);
+            let payload = redacted_order_summary(&test_order());
+            let id_open = uuid::Uuid::new_v4().to_string();
+            storage
+                .insert_prepare_operation(
+                    &id_open,
+                    super::super::LiveOperationKind::SubmitOrder,
+                    "fp-open",
+                    "key-open",
+                    now,
+                    expires,
+                    &payload,
+                    None,
+                )
+                .unwrap();
+            let err = storage
+                .transition_to_stale_resolved(
+                    &id_open,
+                    Some("desktop:stale_resolve"),
+                    &serde_json::json!({"acknowledged": true}),
+                )
+                .unwrap_err();
+            assert!(err.to_string().contains("only unknown or expired"));
+        }
+        // Unknown -> stale_resolved should succeed and unblock
+        {
+            let storage = Storage::open_in_memory().unwrap();
+            let now = Utc::now();
+            let expires = now + chrono::Duration::seconds(30);
+            let payload = redacted_order_summary(&test_order());
+            let id_unknown = uuid::Uuid::new_v4().to_string();
+            storage
+                .insert_prepare_operation(
+                    &id_unknown,
+                    super::super::LiveOperationKind::SubmitOrder,
+                    "fp-unk2",
+                    "key-unk2",
+                    now,
+                    expires,
+                    &payload,
+                    None,
+                )
+                .unwrap();
+            storage
+                .transition_to_unknown(
+                    &id_unknown,
+                    &serde_json::json!({"reason":"dialog closed"}),
+                    Some("desktop:test"),
+                )
+                .unwrap();
+            assert!(storage.has_active_live_operation().unwrap());
+            storage
+                .transition_to_stale_resolved(
+                    &id_unknown,
+                    Some("desktop:stale_resolve"),
+                    &serde_json::json!({"acknowledged": true, "previous_state":"unknown"}),
+                )
+                .unwrap();
+            let op = storage.get_operation(&id_unknown).unwrap().unwrap();
+            assert_eq!(op.state, super::super::LiveOperationState::Aborted);
+            assert!(!storage.has_active_live_operation().unwrap());
+            let audits = storage.list_audit_events(10, 0, Some(&id_unknown)).unwrap();
+            assert!(audits.iter().any(|a| a.event_type == "stale_resolved"));
+            assert!(
+                audits
+                    .iter()
+                    .any(|a| a.from_state.as_deref() == Some("unknown"))
+            );
+            // No secret in audit detail
+            for a in &audits {
+                if let Some(d) = &a.detail {
+                    assert!(!d.to_string().to_lowercase().contains("token"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stale_resolve_expired_and_audit() {
+        let storage = Storage::open_in_memory().unwrap();
+        let now = Utc::now() - chrono::Duration::seconds(60);
+        let expires = now + chrono::Duration::seconds(30);
+        let payload = redacted_order_summary(&test_order());
+        let id = uuid::Uuid::new_v4().to_string();
+        storage
+            .insert_prepare_operation(
+                &id,
+                super::super::LiveOperationKind::SubmitOrder,
+                "fp-exp2",
+                "key-exp2",
+                now,
+                expires,
+                &payload,
+                None,
+            )
+            .unwrap();
+        storage.expire_stale_operations().unwrap();
+        let op = storage.get_operation(&id).unwrap().unwrap();
+        assert_eq!(op.state, super::super::LiveOperationState::Expired);
+        assert!(storage.has_active_live_operation().unwrap());
+        storage
+            .transition_to_stale_resolved(
+                &id,
+                Some("desktop:stale_resolve"),
+                &serde_json::json!({"acknowledged": true, "previous_state":"expired"}),
+            )
+            .unwrap();
+        let op2 = storage.get_operation(&id).unwrap().unwrap();
+        assert_eq!(op2.state, super::super::LiveOperationState::Aborted);
+        let audits = storage.list_audit_events(10, 0, Some(&id)).unwrap();
+        assert!(audits.iter().any(|a| a.event_type == "stale_resolved"));
+        assert!(!storage.has_active_live_operation().unwrap());
+    }
+
+    #[test]
+    fn expiry_during_confirm_is_committed() {
+        let storage = Storage::open_in_memory().unwrap();
+        let now = Utc::now() - chrono::Duration::seconds(60);
+        let expires = now + chrono::Duration::seconds(30);
+        let payload = redacted_order_summary(&test_order());
+        let id = uuid::Uuid::new_v4().to_string();
+        storage
+            .insert_prepare_operation(
+                &id,
+                super::super::LiveOperationKind::SubmitOrder,
+                "fp-exp-confirm",
+                "key-exp-confirm",
+                now,
+                expires,
+                &payload,
+                None,
+            )
+            .unwrap();
+        let res = storage.transition_to_confirming(&id, Some("test"));
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("expired"));
+        let op = storage.get_operation(&id).unwrap().unwrap();
+        assert_eq!(op.state, super::super::LiveOperationState::Expired);
+        let audits = storage.list_audit_events(10, 0, Some(&id)).unwrap();
+        assert!(audits.iter().any(|a| a.event_type == "expired"));
+    }
 }

@@ -1,6 +1,8 @@
 #[cfg(target_os = "macos")]
 pub mod keychain;
 #[cfg(target_os = "macos")]
+pub mod server;
+#[cfg(target_os = "macos")]
 pub mod settings;
 #[cfg(target_os = "macos")]
 pub mod status;
@@ -8,50 +10,7 @@ pub mod status;
 pub mod validation;
 
 #[cfg(target_os = "macos")]
-use std::sync::Arc;
-#[cfg(target_os = "macos")]
-use tokio::{sync::Mutex, task::JoinHandle};
-
-#[cfg(target_os = "macos")]
-use crate::{config::OperatorConfig, operator_service::OperatorService, storage::Storage};
-
-#[cfg(target_os = "macos")]
-#[derive(Clone)]
-pub struct ServerState {
-    pub running: bool,
-    pub bind_addr: Option<String>,
-    pub error: Option<String>,
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Clone)]
-pub struct AppState {
-    pub storage: Arc<Storage>,
-    pub service: OperatorService,
-    pub config: Arc<Mutex<OperatorConfig>>,
-    pub initial_config: OperatorConfig,
-    pub server_state: Arc<Mutex<ServerState>>,
-    pub server_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
-}
-
-#[cfg(target_os = "macos")]
-impl AppState {
-    pub fn new(storage: Arc<Storage>, service: OperatorService, config: OperatorConfig) -> Self {
-        let initial = config.clone();
-        Self {
-            storage,
-            service,
-            config: Arc::new(Mutex::new(config)),
-            initial_config: initial,
-            server_state: Arc::new(Mutex::new(ServerState {
-                running: false,
-                bind_addr: None,
-                error: None,
-            })),
-            server_handle: Arc::new(Mutex::new(None)),
-        }
-    }
-}
+pub use server::{AppState, spawn_background_server};
 
 // ---------------------------------------------------------------------------
 // Tauri commands
@@ -83,7 +42,6 @@ pub async fn save_settings(
         cfg_snapshot.max_nodes,
         &cfg_snapshot.network_mode.to_string(),
     )?;
-    // Update effective config so repeated saves correctly report no restart
     if let Ok(reloaded) =
         crate::config::OperatorConfig::from_env_with_storage(state.storage.as_ref())
     {
@@ -103,11 +61,8 @@ pub async fn get_runtime_status(
     let token = keychain::token_status();
     let inspector = crate::ax::AccessibilityInspector::new(state.initial_config.clone());
     let accessibility = inspector.status();
-
-    // Compare active runtime (initial_config) vs persisted storage for restart
     let (restart_required, restart_reasons) =
         status::check_restart_required(state.storage.as_ref(), &state.initial_config);
-
     let instance_id = state
         .storage
         .get_setting(crate::storage::settings::SETTING_INSTANCE_ID)
@@ -115,7 +70,6 @@ pub async fn get_runtime_status(
         .flatten()
         .or_else(|| cfg.instance_id.clone())
         .unwrap_or_else(|| "unknown".to_string());
-
     Ok(status::RuntimeStatus {
         server_running: server.running,
         server_bind_addr: server.bind_addr,
@@ -154,15 +108,12 @@ pub async fn save_token(
 ) -> Result<keychain::TokenStatus, String> {
     keychain::save_keychain_token(&token)?;
     if env_token_present() {
-        // Env takes precedence; keychain saved for future but server keeps env token
         return Ok(keychain::token_status());
     }
-    // Rotate server to pick up new keychain token
-    stop_server(state.inner()).await;
-    // Start only if token now configured
+    server::stop_server_pub(state.inner()).await;
     let status = keychain::token_status();
     if status.configured {
-        if let Err(e) = start_server(state.inner()).await {
+        if let Err(e) = server::start_server_pub(state.inner()).await {
             let mut srv = state.inner().server_state.lock().await;
             srv.running = false;
             srv.error = Some(e);
@@ -178,11 +129,9 @@ pub async fn clear_token(
 ) -> Result<keychain::TokenStatus, String> {
     keychain::clear_keychain_token()?;
     if env_token_present() {
-        // Env token still provides auth; keep server running
         return Ok(keychain::token_status());
     }
-    // No env token and keychain cleared -> stop server, it was serving old token
-    stop_server(state.inner()).await;
+    server::stop_server_pub(state.inner()).await;
     {
         let mut srv = state.inner().server_state.lock().await;
         srv.running = false;
@@ -286,104 +235,60 @@ pub async fn list_audit_events(
         .map_err(|e| e.to_string())
 }
 
-// ---------------------------------------------------------------------------
-// Background server startup helpers
-// ---------------------------------------------------------------------------
-
+/// Supervised desktop-only recovery for stale operations.
+/// Only `unknown`/`expired` are accepted; it never submits/confirms the broker dialog.
+/// The operator must have verified the broker confirmation dialog is closed, then call this
+/// to write a `stale_resolved` audit and move the operation to terminal `aborted` so future
+/// prepares are unblocked. Clears any in-memory confirmation token.
 #[cfg(target_os = "macos")]
-async fn stop_server(app_state: &AppState) {
-    // Abort handle if present and wait briefly to release port
-    let handle_opt = { app_state.server_handle.lock().await.take() };
-    if let Some(handle) = handle_opt {
-        handle.abort();
-        // Give OS time to release the socket; poll handle to avoid stale error overwrite
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+#[tauri::command]
+pub async fn resolve_stale_operation(
+    state: tauri::State<'_, AppState>,
+    operation_id: String,
+) -> Result<serde_json::Value, String> {
+    let id = operation_id.trim().to_string();
+    if id.is_empty() {
+        return Err("operation_id is required".to_string());
     }
-    let mut srv = app_state.server_state.lock().await;
-    srv.running = false;
-    // keep bind_addr/error for caller to set appropriately
-}
-
-#[cfg(target_os = "macos")]
-async fn start_server(app_state: &AppState) -> Result<(), String> {
-    // Resolve effective token (env or keychain)
-    let (token_opt, _) = keychain::resolve_token();
-    let effective = {
-        let cfg = app_state.config.lock().await;
-        if let Some(env_tok) = cfg.auth_token.clone().filter(|v| !v.trim().is_empty()) {
-            Some(env_tok)
-        } else {
-            token_opt
+    let op = state
+        .storage
+        .get_operation(&id)
+        .map_err(|e| format!("storage error: {e}"))?
+        .ok_or_else(|| "operation not found".to_string())?;
+    match op.state {
+        crate::storage::LiveOperationState::Unknown
+        | crate::storage::LiveOperationState::Expired => {}
+        _ => {
+            return Err(format!(
+                "only unknown or expired operations can be resolved (current state: {:?})",
+                op.state
+            ));
         }
-    };
-    let Some(effective_token) = effective.filter(|v| !v.trim().is_empty()) else {
-        let mut srv = app_state.server_state.lock().await;
-        srv.running = false;
-        srv.bind_addr = None;
-        srv.error = Some("token not configured".to_string());
-        return Err("token not configured".to_string());
-    };
-    // Build effective config for server
-    let mut cfg = app_state.config.lock().await.clone();
-    cfg.auth_token = Some(effective_token);
-    let bind = cfg.bind_addr;
-    // Build router and bind synchronously before marking running
-    let inspector = crate::ax::AccessibilityInspector::new(cfg.clone());
-    let router = crate::mcp::build_router(&cfg, inspector, app_state.service.clone())
-        .map_err(|e| format!("failed to build router: {e}"))?;
-    let listener = tokio::net::TcpListener::bind(bind)
-        .await
-        .map_err(|e| format!("failed to bind {}: {e}", bind))?;
-
-    let bind_str = bind.to_string();
-    {
-        let mut srv = app_state.server_state.lock().await;
-        srv.running = true;
-        srv.bind_addr = Some(bind_str.clone());
-        srv.error = None;
     }
-    let server_state = app_state.server_state.clone();
-    let handle = tokio::spawn(async move {
-        let res = axum::serve(listener, router).await;
-        let mut srv = server_state.lock().await;
-        // Only overwrite if still marked running with same bind (avoid stale overwrite after rotation)
-        if srv.running && srv.bind_addr.as_deref() == Some(&bind_str) {
-            match res {
-                Ok(()) => {
-                    srv.running = false;
-                    srv.error = Some("server exited".to_string());
-                }
-                Err(e) => {
-                    srv.running = false;
-                    srv.error = Some(format!("server failed: {e}"));
-                    tracing::warn!(error=%e, "desktop background server failed");
-                }
-            }
-            srv.bind_addr = None;
-        }
+    let detail = serde_json::json!({
+        "acknowledged": true,
+        "reason": "desktop_stale_resolve_dialog_closed",
+        "previous_state": format!("{:?}", op.state).to_lowercase(),
+        "resolved_by": "desktop:stale_resolve"
     });
-    *app_state.server_handle.lock().await = Some(handle);
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-async fn try_start_server_if_needed(app_state: &AppState) {
-    // Only start if not already running
-    {
-        let srv = app_state.server_state.lock().await;
-        if srv.running {
-            return;
-        }
+    state
+        .storage
+        .transition_to_stale_resolved(&id, Some("desktop:stale_resolve"), &detail)
+        .map_err(|e| e.to_string())?;
+    if let Ok(uuid) = uuid::Uuid::parse_str(&id) {
+        state.service.confirmation_tokens.lock().await.remove(&uuid);
     }
-    if app_state.server_handle.lock().await.is_some() {
-        return;
-    }
-    let _ = start_server(app_state).await;
-}
-
-#[cfg(target_os = "macos")]
-pub async fn spawn_background_server(app_state: &AppState) {
-    try_start_server_if_needed(app_state).await;
+    let updated = state
+        .storage
+        .get_operation(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "operation disappeared after resolve".to_string())?;
+    Ok(serde_json::json!({
+        "operation_id": updated.id,
+        "previous_state": format!("{:?}", op.state).to_lowercase(),
+        "state": format!("{:?}", updated.state).to_lowercase(),
+        "message": "stale operation resolved; new prepares will no longer be blocked"
+    }))
 }
 
 #[cfg(test)]
@@ -433,7 +338,6 @@ mod tests {
     fn repeated_save_no_restart_when_unchanged() {
         let storage = Storage::open_in_memory().unwrap();
         storage.ensure_instance_id(None).unwrap();
-        // First save changes bind from default 5190 to 5191
         let req1 = SaveSettingsRequest {
             stock_service_url: None,
             bind_addr: "127.0.0.1:5191".to_string(),
@@ -458,8 +362,6 @@ mod tests {
         )
         .unwrap();
         assert!(resp1.restart_required);
-        // Second save with same values as persisted should report no restart
-        // Simulate AppState.config having been updated to 5191 after first save
         let resp2 = save_public_settings(
             &storage,
             req1,

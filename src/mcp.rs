@@ -600,14 +600,6 @@ pub async fn serve(
     Ok(())
 }
 
-pub async fn serve_with_config(
-    config: OperatorConfig,
-    inspector: AccessibilityInspector,
-    operator_service: OperatorService,
-) -> Result<()> {
-    serve(config, inspector, operator_service).await
-}
-
 pub(crate) fn build_router(
     config: &OperatorConfig,
     inspector: AccessibilityInspector,
@@ -658,6 +650,19 @@ fn http_config() -> rmcp::transport::streamable_http_server::StreamableHttpServe
         .disable_allowed_hosts()
 }
 
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    // Avoid early-exit comparison; iterates over all bytes when lengths match.
+    // Length mismatch still returns false but does not leak content via timing.
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.as_bytes().iter().zip(b.as_bytes()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 async fn authenticate(
     axum::extract::State(expected): axum::extract::State<Arc<String>>,
     request: Request<Body>,
@@ -668,7 +673,7 @@ async fn authenticate(
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|value| value.trim() == expected.as_str());
+        .is_some_and(|value| constant_time_eq(value.trim(), expected.as_str()));
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response();
     }

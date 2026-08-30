@@ -225,6 +225,23 @@ function mkEmptyRow(colspan, text) {
   return tr;
 }
 
+async function resolveStale(opId, currentState) {
+  const confirmed = window.confirm(
+    `Resolve stale operation ${opId.slice(0, 8)}… (${currentState})?\n\n` +
+    `Only proceed if you have verified the broker confirmation dialog is CLOSED and the operation will not be submitted.\n\n` +
+    `This will write an auditable 'stale_resolved' event, move the operation to 'aborted', clear its in-memory token, and unblock new prepares.`
+  );
+  if (!confirmed) return;
+  try {
+    const res = await invoke("resolve_stale_operation", { operation_id: opId, operationId: opId });
+    showMessage(res.message || `Resolved ${opId.slice(0, 8)}…`, "ok");
+    await loadOps();
+    await loadAudit();
+  } catch (e) {
+    showMessage("Resolve failed: " + (typeof e === "string" ? e : e?.message || JSON.stringify(e)).slice(0, 300), "err");
+  }
+}
+
 async function loadOps() {
   const kind = $("#fKind").value || null;
   const state = $("#fState").value || null;
@@ -240,7 +257,7 @@ async function loadOps() {
     $("#opsPage").textContent = "page " + (Math.floor(opsOffset / limit) + 1) + " · " + ops.length + " rows";
     clearBody(body);
     if (ops.length === 0) {
-      body.appendChild(mkEmptyRow(6, "No operations"));
+      body.appendChild(mkEmptyRow(7, "No operations"));
     } else {
       for (const o of ops) {
         const tr = document.createElement("tr");
@@ -252,6 +269,19 @@ async function loadOps() {
         const payloadTitle = (() => { try { return JSON.stringify(o.payload_summary); } catch { return payloadText; }})();
         tr.appendChild(mkCell(payloadText, payloadTitle));
         tr.appendChild(mkCell(o.actor_source || "—"));
+        const actionTd = document.createElement("td");
+        if (o.state === "unknown" || o.state === "expired") {
+          const btn = document.createElement("button");
+          btn.textContent = "Resolve stale";
+          btn.className = "danger";
+          btn.title = "Mark dialog closed and unblock new operations (audited)";
+          btn.addEventListener("click", () => resolveStale(o.operation_id || o.id, o.state));
+          actionTd.appendChild(btn);
+        } else {
+          actionTd.textContent = "—";
+          actionTd.className = "hint";
+        }
+        tr.appendChild(actionTd);
         body.appendChild(tr);
       }
     }
@@ -259,7 +289,7 @@ async function loadOps() {
   } catch (e) {
     setHint(hint, "failed");
     clearBody(body);
-    body.appendChild(mkEmptyRow(6, "Failed: " + String(e?.message || e).slice(0, 200)));
+    body.appendChild(mkEmptyRow(7, "Failed: " + String(e?.message || e).slice(0, 200)));
   }
 }
 
@@ -343,12 +373,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#btnLoadOps")?.addEventListener("click", () => { opsOffset = 0; loadOps(); });
   $("#btnLoadAudit")?.addEventListener("click", () => { auditOffset = 0; loadAudit(); });
   $("#networkMode")?.addEventListener("change", updateNetworkUI);
-  $("#bindAddr")?.addEventListener("input", () => {
-    // if user types private-looking address while in loopback, hint them
-    if ($("#networkMode")?.value === "loopback" && $("#bindAddr").value.trim().match(/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|100\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\.)/)) {
-      // keep warning hidden but error will show on save
-    }
-  });
 
   if (isTauri) {
     await loadSettings();

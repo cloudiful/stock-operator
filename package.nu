@@ -12,10 +12,11 @@ def main [
   let version = $package.version
   let target_dir = ($metadata.target_directory | path expand)
   let release_dir = if ($target | is-empty) { $target_dir | path join "release" } else { $target_dir | path join $target | path join "release" }
-  let app = if ($output | path type) == "absolute" { $output } else { $root | path join $output }
+  let app = if ($output | str starts-with "/") { $output } else { $root | path join $output }
   let contents = ($app | path join "Contents")
   let macos = ($contents | path join "MacOS")
   let helpers = ($contents | path join "Helpers")
+  let resources = ($contents | path join "Resources")
 
   # Verify Tauri + UI assets are present for desktop bundling
   if not (($root | path join "tauri.conf.json") | path exists) { error make {msg: "missing tauri.conf.json"} }
@@ -34,12 +35,12 @@ def main [
   let tauri_bundle = ($release_dir | path join "bundle/macos/Stock Operator.app")
   let use_tauri_bundle = ($tauri_bundle | path exists)
 
-  let helper = (
+  let helper_candidates = (
     glob ($release_dir | path join "build/stock-operator-*/out/window-ocr")
     | where {|path| ($path | path type) == "file" }
     | sort-by {|path| (ls $path | first).modified }
-    | last
   )
+  let helper = if ($helper_candidates | is-empty) { "" } else { $helper_candidates | last }
   let binary = ($release_dir | path join "stock-operator")
   if not ($binary | path exists) { error make {msg: $"missing release binary: ($binary)"} }
   if ($helper | is-empty) { error make {msg: "missing release OCR helper; inspect the stock-operator build warnings"} }
@@ -62,9 +63,14 @@ def main [
   }
 
   if ($app | path exists) { rm --recursive --force $app }
-  mkdir $macos $helpers
+  mkdir $macos $helpers $resources
   cp $binary ($macos | path join "stock-operator")
   cp $helper ($helpers | path join "window-ocr")
+  # Bundle icon for Finder/Dock (CFBundleIconFile expects icon in Resources)
+  let icon_src = ($root | path join "icons/icon.icns")
+  if ($icon_src | path exists) {
+    cp $icon_src ($resources | path join "icon.icns")
+  }
   open ($root | path join "macos/Info.plist.template")
   | str replace --all "__VERSION__" $version
   | save ($contents | path join "Info.plist")

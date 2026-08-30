@@ -58,6 +58,7 @@ impl Storage {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn delete_setting(&self, key: &str) -> Result<()> {
         let conn = self.conn.lock().expect("storage mutex poisoned");
         conn.execute("DELETE FROM operator_settings WHERE key = ?1", params![key])

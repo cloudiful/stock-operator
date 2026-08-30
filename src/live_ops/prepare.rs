@@ -97,6 +97,7 @@ impl OperatorService {
         })
     }
 
+    #[allow(dead_code)]
     pub async fn prepare_cancellation(
         &self,
         request: PrepareCancellationRequest,

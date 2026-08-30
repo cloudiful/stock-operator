@@ -12,8 +12,8 @@ permissions:
 
 jobs:
   check:
-    name: check (fmt, test, tauri assets)
-    runs-on: ubuntu-latest
+    name: check (fmt, test, tauri assets) — macOS
+    runs-on: macos-15
     env:
       CARGO_TERM_COLOR: always
       SQLX_OFFLINE: "true"
@@ -27,10 +27,10 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Cargo check
+      - name: Cargo check (macOS full crate)
         run: SQLX_OFFLINE=true cargo check --all-targets
 
-      - name: Cargo test
+      - name: Cargo test (macOS full crate, 97+ tests)
         run: SQLX_OFFLINE=true cargo test --all-targets
 
       - name: Validate Tauri config and static assets
@@ -47,14 +47,20 @@ jobs:
           test -f icons/icon.icns
           test -f macos/Info.plist.template
           test -f migrations/0001_initial.sql
-          echo "validating package.nu exists and is executable..."
+          test -f migrations/0002_stale_resolve.sql
+          echo "validating package.nu exists..."
           test -f package.nu
           if command -v nu >/dev/null 2>&1; then
             nu -c "open tauri.conf.json | get identifier" | grep -q "com.cloudiful.stock-operator"
           else
             grep -q "com.cloudiful.stock-operator" tauri.conf.json
           fi
-          echo "Tauri assets validated"
+          # Ensure CSP includes Tauri IPC scheme
+          grep -q "ipc:" tauri.conf.json
+          # Ensure Info.plist template does not declare LSUIElement for windowed app
+          if grep -q "LSUIElement" macos/Info.plist.template; then echo "LSUIElement should be removed for windowed Tauri app"; exit 1; fi
+          grep -q "CFBundleIconFile" macos/Info.plist.template
+          echo "Tauri assets validated on macOS"
 
       - name: Check git diff does not contain whitespace errors
         run: git diff --check || echo "diff check warnings above (non-fatal for this repo)"
