@@ -1,6 +1,6 @@
 use std::{
     env,
-    net::SocketAddr,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
 };
 
@@ -12,6 +12,45 @@ const DEFAULT_TARGET_BUNDLE_ID: &str = "com.citics.mac.tdx";
 const DEFAULT_TARGET_PROCESS_NAME: &str = "中信证券网上交易";
 const DEFAULT_MAX_DEPTH: usize = 6;
 const DEFAULT_MAX_NODES: usize = 300;
+const DEFAULT_NETWORK_MODE: &str = "loopback";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NetworkMode {
+    Loopback,
+    PrivateOverlay,
+}
+
+impl NetworkMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Loopback => "loopback",
+            Self::PrivateOverlay => "private-overlay",
+        }
+    }
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let v = raw.trim().to_ascii_lowercase();
+        match v.as_str() {
+            "loopback" | "loopback-only" | "loopback_only" => Ok(Self::Loopback),
+            "private" | "private-overlay" | "private_overlay" | "overlay" | "tailscale"
+            | "wireguard" => Ok(Self::PrivateOverlay),
+            "" => Err("network mode is required".to_string()),
+            _ => Err(format!(
+                "unknown network mode '{}'; expected 'loopback' or 'private-overlay'",
+                raw.trim()
+            )),
+        }
+    }
+}
+impl std::fmt::Display for NetworkMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl Default for NetworkMode {
+    fn default() -> Self {
+        Self::Loopback
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct OperatorConfig {
@@ -22,29 +61,34 @@ pub struct OperatorConfig {
     pub target_process_name: String,
     pub max_depth: usize,
     pub max_nodes: usize,
-    /// Resolved database path. Env override STOCK_OPERATOR_DB_PATH, default
-    /// ~/Library/Application Support/Stock Operator/operator.sqlite3 on macOS.
     pub db_path: PathBuf,
-    /// Stock main-service URL for Tauri UI / bridge. Optional, never a secret.
     pub stock_service_url: Option<String>,
-    /// Configured instance identifier, if provided via env. Generated otherwise
-    /// and persisted in SQLite as `operator_instance_id`.
     pub instance_id: Option<String>,
+    pub network_mode: NetworkMode,
 }
 
 impl OperatorConfig {
     pub fn from_env() -> Result<Self> {
+        let network_mode = resolve_network_mode_env()?;
         let bind_addr = env::var("STOCK_OPERATOR_BIND_ADDR")
             .unwrap_or_else(|_| DEFAULT_BIND_ADDR.to_string())
             .parse::<SocketAddr>()
             .context("STOCK_OPERATOR_BIND_ADDR must be a socket address")?;
-        if !bind_addr.ip().is_loopback() {
-            bail!("stock-operator only binds to loopback; use a 127.0.0.1 or ::1 address");
-        }
+        validate_bind_for_mode(bind_addr, network_mode).map_err(|e| anyhow::anyhow!(e))?;
 
         let auth_token = env::var("STOCK_OPERATOR_AUTH_TOKEN")
             .ok()
             .filter(|value| !value.trim().is_empty());
+
+        // Private overlay with non-loopback requires bearer auth at startup (env).
+        if network_mode == NetworkMode::PrivateOverlay
+            && !bind_addr.ip().is_loopback()
+            && auth_token.is_none()
+        {
+            bail!(
+                "private-overlay network mode with non-loopback bind requires STOCK_OPERATOR_AUTH_TOKEN (or Keychain token when running desktop)"
+            );
+        }
 
         let db_path = resolve_db_path();
         let stock_service_url = env::var("STOCK_OPERATOR_MAIN_SERVICE_URL")
@@ -74,14 +118,13 @@ impl OperatorConfig {
             db_path,
             stock_service_url,
             instance_id,
+            network_mode,
         })
     }
 
-    /// Load effective config preferring explicit env vars, then persisted SQLite settings,
-    /// then built-in defaults. `auth_token` remains env-only here; keychain resolution
-    /// is handled by the desktop layer and merged afterwards.
     pub fn from_env_with_storage(storage: &crate::storage::Storage) -> Result<Self> {
         let db_path = resolve_db_path();
+        let network_mode = resolve_network_mode_with_storage(storage)?;
 
         let bind_addr = if let Ok(raw) = env::var("STOCK_OPERATOR_BIND_ADDR") {
             let trimmed = raw.trim();
@@ -89,15 +132,13 @@ impl OperatorConfig {
                 let addr: SocketAddr = trimmed
                     .parse()
                     .context("STOCK_OPERATOR_BIND_ADDR must be a socket address")?;
-                if !addr.ip().is_loopback() {
-                    bail!("stock-operator only binds to loopback; use a 127.0.0.1 or ::1 address");
-                }
+                validate_bind_for_mode(addr, network_mode).map_err(|e| anyhow::anyhow!(e))?;
                 addr
             } else {
-                Self::bind_addr_from_storage(storage)?
+                Self::bind_addr_from_storage(storage, network_mode)?
             }
         } else {
-            Self::bind_addr_from_storage(storage)?
+            Self::bind_addr_from_storage(storage, network_mode)?
         };
 
         let mcp_path = if let Ok(raw) = env::var("STOCK_OPERATOR_MCP_PATH") {
@@ -195,10 +236,14 @@ impl OperatorConfig {
             db_path,
             stock_service_url,
             instance_id,
+            network_mode,
         })
     }
 
-    fn bind_addr_from_storage(storage: &crate::storage::Storage) -> Result<SocketAddr> {
+    fn bind_addr_from_storage(
+        storage: &crate::storage::Storage,
+        mode: NetworkMode,
+    ) -> Result<SocketAddr> {
         if let Some(raw) = storage
             .get_setting("bind_addr")
             .ok()
@@ -209,12 +254,12 @@ impl OperatorConfig {
             let addr: SocketAddr = raw
                 .parse()
                 .context("persisted bind_addr must be a socket address")?;
-            if !addr.ip().is_loopback() {
-                bail!("persisted bind_addr must be loopback");
-            }
+            validate_bind_for_mode(addr, mode).map_err(|e| anyhow::anyhow!(e))?;
             return Ok(addr);
         }
-        Ok(DEFAULT_BIND_ADDR.parse().unwrap())
+        let def: SocketAddr = DEFAULT_BIND_ADDR.parse().unwrap();
+        validate_bind_for_mode(def, mode).map_err(|e| anyhow::anyhow!(e))?;
+        Ok(def)
     }
 
     fn mcp_path_from_storage(storage: &crate::storage::Storage) -> String {
@@ -275,10 +320,93 @@ impl OperatorConfig {
         format!("http://{}{}", self.bind_addr, self.mcp_path)
     }
 
-    /// Human-readable database location for diagnostics.
     pub fn db_path_display(&self) -> String {
         self.db_path.display().to_string()
     }
+}
+
+fn resolve_network_mode_env() -> Result<NetworkMode> {
+    if let Ok(raw) = env::var("STOCK_OPERATOR_NETWORK_MODE") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return NetworkMode::parse(trimmed).map_err(|e| anyhow::anyhow!(e));
+        }
+    }
+    Ok(NetworkMode::Loopback)
+}
+
+fn resolve_network_mode_with_storage(storage: &crate::storage::Storage) -> Result<NetworkMode> {
+    if let Ok(raw) = env::var("STOCK_OPERATOR_NETWORK_MODE") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return NetworkMode::parse(trimmed).map_err(|e| anyhow::anyhow!(e));
+        }
+    }
+    if let Some(raw) = storage
+        .get_setting("network_mode")
+        .ok()
+        .flatten()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+    {
+        return NetworkMode::parse(&raw).map_err(|e| anyhow::anyhow!(e));
+    }
+    Ok(NetworkMode::Loopback)
+}
+
+pub fn validate_bind_for_mode(addr: SocketAddr, mode: NetworkMode) -> Result<(), String> {
+    let ip = addr.ip();
+    if ip.is_unspecified() {
+        return Err(format!(
+            "bind address {addr} is unspecified (0.0.0.0 or ::); public exposure is not allowed"
+        ));
+    }
+    if ip.is_loopback() {
+        return Ok(());
+    }
+    match mode {
+        NetworkMode::Loopback => Err(format!(
+            "bind address {addr} is not loopback; loopback-only mode requires 127.0.0.1 or ::1. Set STOCK_OPERATOR_NETWORK_MODE=private-overlay for private network use"
+        )),
+        NetworkMode::PrivateOverlay => {
+            if is_private_ip(ip) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "bind address {addr} is not a private network address; private-overlay mode permits only loopback or private addresses (RFC1918 10/8,172.16/12,192.168/16, CGNAT 100.64/10, ULA fc00::/7, link-local). Public addresses are rejected"
+                ))
+            }
+        }
+    }
+}
+
+pub fn is_private_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            if v4.is_private() || v4.is_link_local() {
+                return true;
+            }
+            // CGNAT 100.64.0.0/10 and Tailscale range
+            let octets = v4.octets();
+            if octets[0] == 100 && (64..=127).contains(&octets[1]) {
+                return true;
+            }
+            false
+        }
+        IpAddr::V6(v6) => {
+            if v6.is_loopback() || v6.is_unspecified() {
+                return false;
+            }
+            v6.is_unique_local() || v6.is_unicast_link_local()
+        }
+    }
+}
+
+// Allow checking private for socket check without exposing Ipv4
+#[allow(dead_code)]
+pub fn is_cgnat(v4: Ipv4Addr) -> bool {
+    let o = v4.octets();
+    o[0] == 100 && (64..=127).contains(&o[1])
 }
 
 pub fn resolve_db_path() -> PathBuf {
@@ -292,7 +420,6 @@ pub fn resolve_db_path() -> PathBuf {
 }
 
 pub fn default_db_path() -> PathBuf {
-    // macOS per-user Application Support
     if let Ok(home) = env::var("HOME") {
         if !home.trim().is_empty() {
             return Path::new(&home)
@@ -302,7 +429,6 @@ pub fn default_db_path() -> PathBuf {
                 .join("operator.sqlite3");
         }
     }
-    // Fallback to XDG or current directory for tests/CI outside macOS
     if let Ok(xdg) = env::var("XDG_DATA_HOME") {
         if !xdg.trim().is_empty() {
             return Path::new(&xdg)
@@ -331,8 +457,11 @@ fn bounded_env_usize(key: &str, default: usize, min: usize, max: usize) -> usize
 
 #[cfg(test)]
 mod tests {
-    use super::{default_db_path, normalize_path, resolve_db_path};
-    use std::env;
+    use super::{
+        NetworkMode, default_db_path, is_private_ip, normalize_path, resolve_db_path,
+        validate_bind_for_mode,
+    };
+    use std::{env, net::SocketAddr};
 
     #[test]
     fn normalizes_mcp_path() {
@@ -371,5 +500,49 @@ mod tests {
         let cfg = super::OperatorConfig::from_env().unwrap();
         let display = cfg.db_path_display();
         assert!(!display.contains("token"));
+    }
+
+    #[test]
+    fn network_mode_parse() {
+        assert_eq!(
+            NetworkMode::parse("loopback").unwrap(),
+            NetworkMode::Loopback
+        );
+        assert_eq!(
+            NetworkMode::parse("private-overlay").unwrap(),
+            NetworkMode::PrivateOverlay
+        );
+        assert_eq!(
+            NetworkMode::parse("private").unwrap(),
+            NetworkMode::PrivateOverlay
+        );
+        assert!(NetworkMode::parse("public").is_err());
+    }
+
+    #[test]
+    fn validate_loopback_only_rejects_private_without_mode() {
+        let private: SocketAddr = "192.168.1.10:5190".parse().unwrap();
+        assert!(validate_bind_for_mode(private, NetworkMode::Loopback).is_err());
+        assert!(validate_bind_for_mode(private, NetworkMode::PrivateOverlay).is_ok());
+    }
+
+    #[test]
+    fn rejects_unspecified_and_public_even_in_private_mode() {
+        let unspecified: SocketAddr = "0.0.0.0:5190".parse().unwrap();
+        assert!(validate_bind_for_mode(unspecified, NetworkMode::PrivateOverlay).is_err());
+        let public: SocketAddr = "8.8.8.8:5190".parse().unwrap();
+        assert!(validate_bind_for_mode(public, NetworkMode::PrivateOverlay).is_err());
+        let tailscale: SocketAddr = "100.64.0.5:5190".parse().unwrap();
+        assert!(validate_bind_for_mode(tailscale, NetworkMode::PrivateOverlay).is_ok());
+        assert!(is_private_ip("100.64.0.5".parse().unwrap()));
+    }
+
+    #[test]
+    fn loopback_always_allowed() {
+        let lo: SocketAddr = "127.0.0.1:5190".parse().unwrap();
+        assert!(validate_bind_for_mode(lo, NetworkMode::Loopback).is_ok());
+        assert!(validate_bind_for_mode(lo, NetworkMode::PrivateOverlay).is_ok());
+        let lo6: SocketAddr = "[::1]:5190".parse().unwrap();
+        assert!(validate_bind_for_mode(lo6, NetworkMode::Loopback).is_ok());
     }
 }

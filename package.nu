@@ -3,6 +3,7 @@
 def main [
   --identity: string = "-"
   --output: path = "target/stock-operator/Stock Operator.app"
+  --target: string = ""
 ] {
   let root = (git rev-parse --show-toplevel | str trim | path expand)
   let manifest = ($root | path join "Cargo.toml")
@@ -10,6 +11,7 @@ def main [
   let package = ($metadata.packages | where name == "stock-operator" | first)
   let version = $package.version
   let target_dir = ($metadata.target_directory | path expand)
+  let release_dir = if ($target | is-empty) { $target_dir | path join "release" } else { $target_dir | path join $target | path join "release" }
   let app = if ($output | path type) == "absolute" { $output } else { $root | path join $output }
   let contents = ($app | path join "Contents")
   let macos = ($contents | path join "MacOS")
@@ -21,20 +23,24 @@ def main [
 
   # Build release binary (Tauri codegen runs via build.rs). Keep deployment target 26.0 aligned with Info.plist.
   with-env {MACOSX_DEPLOYMENT_TARGET: "26.0"} {
-    ^cargo build --release -p stock-operator --manifest-path $manifest
+    if ($target | is-empty) {
+      ^cargo build --release -p stock-operator --manifest-path $manifest
+    } else {
+      ^cargo build --release --target $target -p stock-operator --manifest-path $manifest
+    }
   }
 
   # Prefer an already-produced Tauri bundle (when `cargo tauri build` was used), otherwise collect manual artifacts.
-  let tauri_bundle = ($target_dir | path join "release/bundle/macos/Stock Operator.app")
+  let tauri_bundle = ($release_dir | path join "bundle/macos/Stock Operator.app")
   let use_tauri_bundle = ($tauri_bundle | path exists)
 
   let helper = (
-    glob ($target_dir | path join "release/build/stock-operator-*/out/window-ocr")
+    glob ($release_dir | path join "build/stock-operator-*/out/window-ocr")
     | where {|path| ($path | path type) == "file" }
     | sort-by {|path| (ls $path | first).modified }
     | last
   )
-  let binary = ($target_dir | path join "release/stock-operator")
+  let binary = ($release_dir | path join "stock-operator")
   if not ($binary | path exists) { error make {msg: $"missing release binary: ($binary)"} }
   if ($helper | is-empty) { error make {msg: "missing release OCR helper; inspect the stock-operator build warnings"} }
 

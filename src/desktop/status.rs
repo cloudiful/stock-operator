@@ -111,6 +111,17 @@ pub fn check_restart_required(
         reasons.push("traversal limit requires restart".to_string());
     }
 
+    let current_network_mode = storage
+        .get_setting(crate::storage::settings::SETTING_NETWORK_MODE)
+        .ok()
+        .flatten()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| running.network_mode.to_string());
+    if current_network_mode != running.network_mode.to_string() {
+        reasons.push("network mode requires restart".to_string());
+    }
+
     let required = !reasons.is_empty();
     (required, reasons)
 }
@@ -133,6 +144,7 @@ mod tests {
                 &config.target_process_name,
                 config.max_depth,
                 config.max_nodes,
+                &config.network_mode.to_string(),
             )
             .unwrap();
         let (required, reasons) = check_restart_required(&storage, &config);
@@ -153,12 +165,36 @@ mod tests {
                 &config.target_process_name,
                 6,
                 300,
+                "loopback",
             )
             .unwrap();
-        // Simulate user changing bind via storage to different port
         storage.set_setting("bind_addr", "127.0.0.1:5191").unwrap();
         let (required, reasons) = check_restart_required(&storage, &config);
         assert!(required);
         assert!(reasons.iter().any(|r| r.contains("bind address")));
+    }
+
+    #[test]
+    fn detects_restart_on_network_mode_change() {
+        let storage = Storage::open_in_memory().unwrap();
+        let config = OperatorConfig::from_env().unwrap();
+        storage
+            .seed_from_config(
+                None,
+                "127.0.0.1:5190",
+                "/mcp",
+                &config.target_bundle_id,
+                &config.target_process_name,
+                6,
+                300,
+                "loopback",
+            )
+            .unwrap();
+        storage
+            .set_setting("network_mode", "private-overlay")
+            .unwrap();
+        let (required, reasons) = check_restart_required(&storage, &config);
+        assert!(required);
+        assert!(reasons.iter().any(|r| r.contains("network mode")));
     }
 }

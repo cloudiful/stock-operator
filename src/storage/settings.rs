@@ -13,6 +13,7 @@ pub(crate) const SETTING_TARGET_BUNDLE_ID: &str = "target_bundle_id";
 pub(crate) const SETTING_TARGET_PROCESS_NAME: &str = "target_process_name";
 pub(crate) const SETTING_MAX_DEPTH: &str = "max_depth";
 pub(crate) const SETTING_MAX_NODES: &str = "max_nodes";
+pub(crate) const SETTING_NETWORK_MODE: &str = "network_mode";
 
 impl Storage {
     pub fn ensure_instance_id(&self, configured: Option<String>) -> Result<String> {
@@ -89,6 +90,7 @@ impl Storage {
         target_process_name: &str,
         max_depth: usize,
         max_nodes: usize,
+        network_mode: &str,
     ) -> Result<()> {
         if self.get_setting(SETTING_BIND_ADDR)?.is_none() {
             self.set_setting(SETTING_BIND_ADDR, bind_addr)?;
@@ -107,6 +109,9 @@ impl Storage {
         }
         if self.get_setting(SETTING_MAX_NODES)?.is_none() {
             self.set_setting(SETTING_MAX_NODES, &max_nodes.to_string())?;
+        }
+        if self.get_setting(SETTING_NETWORK_MODE)?.is_none() {
+            self.set_setting(SETTING_NETWORK_MODE, network_mode)?;
         }
         if let Some(url) = stock_service_url {
             if !url.trim().is_empty() && self.get_setting(SETTING_STOCK_SERVICE_URL)?.is_none() {

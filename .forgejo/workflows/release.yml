@@ -1,0 +1,97 @@
+name: Release (Forgejo)
+
+# Forgejo release — intranet runner convention: Linux `aio` is available, macOS runners
+# are not currently provisioned. This workflow validates the release on Linux and
+# documents where macOS arm64/x86_64 .app artifacts are produced.
+#
+# Assumptions:
+# - No `macos-15` / `macos-13` Forgejo runners are currently available on the intranet.
+#   If a macOS queue is added (e.g. self-hosted macOS with Xcode/Swift), add a job with
+#   `runs-on: macos-15` for aarch64-apple-darwin (M4) and `runs-on: macos-13` for
+#   x86_64-apple-darwin, mirroring .github/workflows/release.yml, and publish via
+#   Forgejo release API instead of GitHub.
+# - GitHub Actions is the canonical macOS packaging path for stock-operator (see
+#   .github/workflows/release.yml) and produces the clickable .app.zip with Helpers/window-ocr.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-release:
+    name: validate release assets (Linux)
+    runs-on: aio
+    env:
+      CARGO_TERM_COLOR: always
+      SQLX_OFFLINE: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo fmt check
+        run: cargo fmt --all -- --check
+
+      - name: Cargo check and test
+        run: |
+          SQLX_OFFLINE=true cargo check --all-targets
+          SQLX_OFFLINE=true cargo test --all-targets
+
+      - name: Validate Tauri release assets
+        run: |
+          set -euo pipefail
+          echo "tag=${{ github.ref_name || 'manual' }}"
+          python3 -m json.tool tauri.conf.json > /dev/null
+          test -f ui/index.html
+          test -f ui/main.js
+          test -f macos/window_ocr.swift
+          test -f macos/Info.plist.template
+          test -f package.nu
+          grep -q "com.cloudiful.stock-operator" tauri.conf.json
+          # Ensure release workflow files exist
+          test -f .github/workflows/release.yml
+          grep -q "aarch64-apple-darwin" .github/workflows/release.yml
+          grep -q "x86_64-apple-darwin" .github/workflows/release.yml
+          grep -q "macos-15" .github/workflows/release.yml
+          grep -q "macos-13" .github/workflows/release.yml
+          echo "Forgejo release validation passed (Linux)"
+          echo "Canonical macOS artifacts are built on GitHub Actions; see .github/workflows/release.yml and docs/protocol.md"
+
+      - name: Generate placeholder SHA256SUMS (Linux validation only)
+        run: |
+          set -euo pipefail
+          echo "# Forgejo intranet build is validation-only; macOS .app artifacts are produced on GitHub Actions" > SHA256SUMS.forgejo.txt
+          echo "# Expected GitHub artifacts: stock-operator-<tag>-aarch64-apple-darwin.app.zip, stock-operator-<tag>-x86_64-apple-darwin.app.zip" >> SHA256SUMS.forgejo.txt
+          cat SHA256SUMS.forgejo.txt
+
+  # Optional macOS packaging job — uncomment if a Forgejo macOS runner is provisioned.
+  # build-macos-optional:
+  #   name: build ${{ matrix.target }} (Forgejo macOS)
+  #   if: false # keep disabled until runner is available; enable and adjust `runs-on` then
+  #   strategy:
+  #     matrix:
+  #       include:
+  #         - target: aarch64-apple-darwin
+  #           runner: macos-15
+  #         - target: x86_64-apple-darwin
+  #           runner: macos-13
+  #   runs-on: ${{ matrix.runner }}
+  #   env:
+  #     MACOSX_DEPLOYMENT_TARGET: "26.0"
+  #     SQLX_OFFLINE: "true"
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #       with: { targets: ${{ matrix.target }} }
+  #     - run: brew install nushell
+  #     - run: nu package.nu --target ${{ matrix.target }}
+  #     - run: ditto -c -k --keepParent "target/stock-operator-${{ matrix.target }}/Stock Operator.app" "stock-operator-${{ github.ref_name }}-${{ matrix.target }}.app.zip"
+  #     - run: shasum -a 256 *.app.zip > SHA256SUMS

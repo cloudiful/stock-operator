@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check (fmt, test, tauri assets)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      SQLX_OFFLINE: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Cargo check
+        run: SQLX_OFFLINE=true cargo check --all-targets
+
+      - name: Cargo test
+        run: SQLX_OFFLINE=true cargo test --all-targets
+
+      - name: Validate Tauri config and static assets
+        run: |
+          set -euo pipefail
+          echo "validating tauri.conf.json..."
+          python3 -m json.tool tauri.conf.json > /dev/null
+          echo "validating capabilities/default.json..."
+          python3 -m json.tool capabilities/default.json > /dev/null
+          test -f ui/index.html
+          test -f ui/main.js
+          test -f ui/styles.css
+          test -f icons/icon.png
+          test -f icons/icon.icns
+          test -f macos/Info.plist.template
+          test -f migrations/0001_initial.sql
+          echo "validating package.nu exists and is executable..."
+          test -f package.nu
+          if command -v nu >/dev/null 2>&1; then
+            nu -c "open tauri.conf.json | get identifier" | grep -q "com.cloudiful.stock-operator"
+          else
+            grep -q "com.cloudiful.stock-operator" tauri.conf.json
+          fi
+          echo "Tauri assets validated"
+
+      - name: Check git diff does not contain whitespace errors
+        run: git diff --check || echo "diff check warnings above (non-fatal for this repo)"

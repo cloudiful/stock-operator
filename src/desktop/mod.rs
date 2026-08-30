@@ -81,6 +81,7 @@ pub async fn save_settings(
         &cfg_snapshot.target_process_name,
         cfg_snapshot.max_depth,
         cfg_snapshot.max_nodes,
+        &cfg_snapshot.network_mode.to_string(),
     )?;
     // Update effective config so repeated saves correctly report no restart
     if let Ok(reloaded) =
@@ -405,6 +406,8 @@ mod tests {
             target_process_name: "中信证券网上交易".to_string(),
             max_depth: 6,
             max_nodes: 300,
+            network_mode: "loopback".to_string(),
+            private_overlay_ack: false,
         };
         let resp = save_public_settings(
             &storage,
@@ -415,6 +418,7 @@ mod tests {
             "中信证券网上交易",
             6,
             300,
+            "loopback",
         )
         .unwrap();
         assert!(!resp.restart_required);
@@ -438,6 +442,8 @@ mod tests {
             target_process_name: "中信证券网上交易".to_string(),
             max_depth: 6,
             max_nodes: 300,
+            network_mode: "loopback".to_string(),
+            private_overlay_ack: false,
         };
         let resp1 = save_public_settings(
             &storage,
@@ -448,6 +454,7 @@ mod tests {
             "中信证券网上交易",
             6,
             300,
+            "loopback",
         )
         .unwrap();
         assert!(resp1.restart_required);
@@ -462,6 +469,7 @@ mod tests {
             "中信证券网上交易",
             6,
             300,
+            "loopback",
         )
         .unwrap();
         assert!(

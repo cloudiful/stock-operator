@@ -54,6 +54,15 @@ function setFallback() {
   }
 }
 
+function updateNetworkUI() {
+  const mode = $("#networkMode")?.value || "loopback";
+  const show = mode === "private-overlay";
+  const warn = $("#privateWarning");
+  const ackRow = $("#ackRow");
+  if (warn) warn.classList.toggle("hidden", !show);
+  if (ackRow) ackRow.classList.toggle("hidden", !show);
+}
+
 async function loadSettings() {
   try {
     const s = await invoke("get_settings");
@@ -64,6 +73,12 @@ async function loadSettings() {
     $("#processName").value = s.target_process_name || "";
     $("#maxDepth").value = s.max_depth;
     $("#maxNodes").value = s.max_nodes;
+    if ($("#networkMode")) {
+      $("#networkMode").value = s.network_mode || "loopback";
+      updateNetworkUI();
+    }
+    // ack checkbox is not persisted; require re-ack each time private mode is chosen
+    if ($("#privateAck")) $("#privateAck").checked = false;
     $("#instanceBadge").textContent = (s.instance_id || "").slice(0, 8) || "—";
   } catch (e) {
     showMessage("Failed to load settings: " + (e?.message || e), "err");
@@ -117,6 +132,8 @@ async function saveSettings() {
     target_process_name: $("#processName").value.trim(),
     max_depth: parseInt($("#maxDepth").value, 10),
     max_nodes: parseInt($("#maxNodes").value, 10),
+    network_mode: $("#networkMode") ? $("#networkMode").value : "loopback",
+    private_overlay_ack: $("#privateAck") ? $("#privateAck").checked : false,
   };
   try {
     const resp = await invoke("save_settings", { request: req });
@@ -325,6 +342,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#btnRefreshStatus")?.addEventListener("click", loadStatus);
   $("#btnLoadOps")?.addEventListener("click", () => { opsOffset = 0; loadOps(); });
   $("#btnLoadAudit")?.addEventListener("click", () => { auditOffset = 0; loadAudit(); });
+  $("#networkMode")?.addEventListener("change", updateNetworkUI);
+  $("#bindAddr")?.addEventListener("input", () => {
+    // if user types private-looking address while in loopback, hint them
+    if ($("#networkMode")?.value === "loopback" && $("#bindAddr").value.trim().match(/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|100\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\.)/)) {
+      // keep warning hidden but error will show on save
+    }
+  });
 
   if (isTauri) {
     await loadSettings();

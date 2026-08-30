@@ -40,13 +40,21 @@
 
         <section class="card">
           <h2>Operator Network</h2>
+          <label>Network mode
+            <select id="networkMode">
+              <option value="loopback">Loopback only (default)</option>
+              <option value="private-overlay">Private overlay (Tailscale/WireGuard/private TLS proxy)</option>
+            </select>
+          </label>
           <label>Bind address
             <input id="bindAddr" type="text" placeholder="127.0.0.1:5190" />
           </label>
           <label>MCP path
             <input id="mcpPath" type="text" placeholder="/mcp" />
           </label>
-          <p class="hint">Loopback only. Changing requires restart.</p>
+          <div id="privateWarning" class="warning hidden">Private overlay exposes the operator on the private network. Requires bearer token + encrypted transport or private overlay (Tailscale/WireGuard). Do not expose to public internet. Plain HTTP on LAN is not encrypted — use Tailscale, WireGuard, or an authenticated TLS reverse proxy.</div>
+          <label id="ackRow" class="ack hidden"><input type="checkbox" id="privateAck" /> I understand: private mode requires bearer auth and private/encrypted transport, and macOS GUI/Accessibility stays local on this Mac.</label>
+          <p class="hint">Loopback is default. Private overlay requires explicit acknowledgement and restart; macOS Accessibility/Screen Recording stay on this Mac.</p>
         </section>
 
         <section class="card">

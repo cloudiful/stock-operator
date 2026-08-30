@@ -40,6 +40,7 @@ use super::{
 struct OperatorMcpServer {
     inspector: AccessibilityInspector,
     service: OperatorService,
+    config: OperatorConfig,
     tool_router: ToolRouter<Self>,
 }
 
@@ -61,7 +62,7 @@ struct HealthResult {
     service: &'static str,
     mode: &'static str,
     mutations_enabled: bool,
-    endpoint_scope: &'static str,
+    endpoint_scope: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
@@ -76,10 +77,15 @@ struct ListOperationsArgs {
 
 #[tool_router(router = tool_router)]
 impl OperatorMcpServer {
-    fn new(inspector: AccessibilityInspector, service: OperatorService) -> Self {
+    fn new(
+        inspector: AccessibilityInspector,
+        service: OperatorService,
+        config: OperatorConfig,
+    ) -> Self {
         Self {
             inspector,
             service,
+            config,
             tool_router: Self::tool_router(),
         }
     }
@@ -89,11 +95,18 @@ impl OperatorMcpServer {
         description = "Return the local operator safety mode. Read/stage operations and explicitly confirmed live operations are exposed separately; live actions require short-lived operation fingerprints and one-time confirmation."
     )]
     async fn operator_health(&self) -> Result<Json<HealthResult>, McpError> {
+        let scope = if self.config.network_mode == crate::config::NetworkMode::PrivateOverlay
+            && !self.config.bind_addr.ip().is_loopback()
+        {
+            "private_overlay".to_string()
+        } else {
+            "loopback_only".to_string()
+        };
         Ok(Json(HealthResult {
             service: "stock-operator",
             mode: "staging_and_supervised_live",
             mutations_enabled: true,
-            endpoint_scope: "loopback_only",
+            endpoint_scope: scope,
         }))
     }
 
@@ -600,7 +613,8 @@ pub(crate) fn build_router(
     inspector: AccessibilityInspector,
     operator_service: OperatorService,
 ) -> Result<Router> {
-    let server = OperatorMcpServer::new(inspector, operator_service.clone());
+    let server =
+        OperatorMcpServer::new(inspector.clone(), operator_service.clone(), config.clone());
     let service = StreamableHttpService::new(
         move || Ok::<_, std::io::Error>(server.clone()),
         LocalSessionManager::default().into(),

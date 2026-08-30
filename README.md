@@ -11,6 +11,8 @@ confirm, submit, or cancel orders. The binary also contains hidden,
 tightly constrained one-shot CLI diagnostics used for supervised live
 submission and cancellation testing.
 
+Remote: `https://forgejo.cloud1ful.com/research/stock-operator` (private, no auto-init; `Cargo.toml` repository field points to this canonical Forgejo path). If a GitHub mirror is used, the Forgejo URL remains canonical for `git remote`.
+
 ## Run
 
 Grant Accessibility permission to the process in **System Settings -> Privacy
@@ -54,15 +56,156 @@ After adding it, switch the entry on. A rebuilt debug executable can have a new
 ad-hoc code identity, so a stable signed `.app` bundle should be used before
 long-running or production-like use.
 
-The MCP endpoint is:
+The MCP endpoint defaults to:
 
 ```text
 http://127.0.0.1:5190/mcp
 ```
 
-Register that endpoint in the stock-goes-stonk AI MCP settings with the same
-static Bearer token. The server refuses non-loopback bind addresses by default;
-see `docs/protocol.md` for cross-machine guidance (phase 4).
+When a private overlay is used, the endpoint is `http://<private-bind>:5190/mcp`
+where `<private-bind>` is a private-network address and `mcp_path` remains
+`/mcp` unless reconfigured. Register that endpoint in the stock-goes-stonk AI
+MCP settings with the same static Bearer token. The server binds loopback by
+default and refuses public/unspecified binds; see “Cross-machine” below and
+`docs/protocol.md` for private-overlay requirements.
+
+## Install from Release
+
+Tagged releases (`v*`) publish macOS `.app` archives with the OCR helper and
+`SHA256SUMS`.
+
+```sh
+# Download from GitHub Releases or Forgejo Releases
+# Example GitHub:
+#   stock-operator-v0.2.12-aarch64-apple-darwin.app.zip  (Apple Silicon M4, arm64)
+#   stock-operator-v0.2.12-x86_64-apple-darwin.app.zip    (Intel x86_64)
+# Each has a matching .app.zip.sha256 and combined SHA256SUMS in the release.
+
+# Verify checksum (GitHub example)
+shasum -a 256 -c SHA256SUMS
+# or
+shasum -a 256 stock-operator-v0.2.12-aarch64-apple-darwin.app.zip
+# compare with SHA256SUMS entry
+
+# Unzip and run — keep the .app bundle intact (TCC/OCR permissions require the bundle, not a bare binary)
+unzip stock-operator-v*.app.zip
+open "Stock Operator.app"
+# or double-click Stock Operator.app in Finder
+
+# First launch: macOS Gatekeeper may block an ad-hoc-signed build
+# Right-click -> Open, or: xattr -dr com.apple.quarantine "Stock Operator.app"
+
+# Update: quit the running app, replace the .app bundle, reopen. SQLite and Keychain persist across updates.
+```
+
+The bundle identifier is `com.cloudiful.stock-operator` with `LSMinimumSystemVersion 26.0`.
+The helper is at `Contents/Helpers/window-ocr` inside the bundle. Grant
+Accessibility and Screen Recording permission to **this bundle** (not the debug
+binary) before long-running use; a rebuilt debug binary has a new ad-hoc
+identity, so re-grant permissions to the released `.app`.
+
+## Cross-machine Linux → Mac operator
+
+Default topology is loopback. The Linux `stock-goes-stonk` main service talks
+to the operator at `http://127.0.0.1:5190` when co-located, or via an explicit
+private-network configuration otherwise. The macOS GUI and Accessibility/OCR
+always run locally on the Mac; only the bearer-authenticated MCP/HTTP API is
+remoted.
+
+### Private-overlay mode (explicit, authenticated)
+
+Non-loopback binds are **only** permitted when:
+
+1. `network_mode` is `private-overlay` (env `STOCK_OPERATOR_NETWORK_MODE=private-overlay` or desktop Connection → Network mode → Private overlay), **and**
+2. `bind_addr` is a private-network address (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, CGNAT `100.64.0.0/10` including Tailscale 100.x, ULA `fc00::/7`, link-local), **and**
+3. bearer auth is present (`STOCK_OPERATOR_AUTH_TOKEN` env or Keychain token), **and**
+4. the transport is encrypted or private: Tailscale, WireGuard, or an authenticated TLS-terminating reverse proxy on the private network.
+
+Public or unspecified binds (`0.0.0.0`, `::`, `8.8.8.8`, etc.) are rejected in
+both modes. Plaintext HTTP over the public internet is not supported and is
+not to be tunneled without TLS/overlay. Loopback remains the safe default.
+
+### Environment / config examples
+
+```sh
+# Loopback (default) — no extra config
+STOCK_OPERATOR_BIND_ADDR=127.0.0.1:5190
+STOCK_OPERATOR_MCP_PATH=/mcp
+STOCK_OPERATOR_AUTH_TOKEN='< bearer token >'
+STOCK_OPERATOR_MAIN_SERVICE_URL=http://127.0.0.1:3000  # optional, for desktop health probe
+
+# Private overlay via Tailscale (Mac has 100.x address)
+STOCK_OPERATOR_NETWORK_MODE=private-overlay
+STOCK_OPERATOR_BIND_ADDR=100.64.12.34:5190
+STOCK_OPERATOR_AUTH_TOKEN='< bearer token >'
+STOCK_OPERATOR_MCP_PATH=/mcp
+# Linux main service then uses http://100.64.12.34:5190/mcp with Authorization: Bearer ...
+
+# Private overlay via WireGuard private address
+STOCK_OPERATOR_NETWORK_MODE=private-overlay
+STOCK_OPERATOR_BIND_ADDR=10.47.0.5:5190
+STOCK_OPERATOR_AUTH_TOKEN='< bearer token >'
+
+# Private overlay behind authenticated TLS reverse proxy on private LAN
+STOCK_OPERATOR_NETWORK_MODE=private-overlay
+STOCK_OPERATOR_BIND_ADDR=192.168.1.20:5190
+STOCK_OPERATOR_AUTH_TOKEN='< bearer token >'
+# Put a TLS proxy (e.g. Caddy/nginx with mTLS or token forwarding) in front;
+# do not expose the operator plaintext port to the public network.
+```
+
+Persisted settings (SQLite, when env overrides are absent) also support
+`network_mode` (`loopback` | `private-overlay`) alongside `bind_addr`,
+`mcp_path`, `stock_main_service_url`, broker target, and traversal limits.
+Changing network mode or bind requires explicit acknowledgement in the desktop
+UI (checkbox) and a restart. Secrets are never persisted in SQLite.
+
+### Desktop UI for cross-machine
+
+Connection tab:
+
+- **Network mode** selector: `Loopback only` vs `Private overlay (...)`
+- When `Private overlay` is selected, a warning is shown and an acknowledgement
+  checkbox must be ticked — without it, saving is rejected. This prevents a
+  generic toggle from silently exposing the listener.
+- **Bind address** and **MCP path** follow the mode validation above and are
+  marked restart-required.
+- The status card shows `Server` (`running` / `server not running` with error
+  reason), `Bind`, `MCP`, and `Restart` details.
+
+### Firewall / ACL guidance
+
+- On the Mac, allow the operator port only on the private interface / overlay:
+  e.g. `socketfilterfw` or `pf` rules that permit `100.64.0.0/10` or `10.x` /
+  WireGuard subnet and deny public ingress. Do not add a `0.0.0.0` allow rule.
+- On Tailscale, use ACLs to allow only the Linux host(s) to reach the Mac on
+  `TCP 5190`, and keep `STOCK_OPERATOR_AUTH_TOKEN` required.
+- On WireGuard, restrict `AllowedIPs` and firewall to the two peers.
+- If using a reverse proxy, terminate TLS at the proxy, forward with the same
+  `Authorization: Bearer` header, and keep the operator bind on `127.0.0.1` or a
+  private address that is not published.
+
+### TLS / overlay / token requirements
+
+- Tailscale and WireGuard already encrypt and authenticate the overlay; the
+  bearer token is still required at the MCP/HTTP layer (`Authorization: Bearer`)
+  and is never logged or stored in SQLite/audit events.
+- Private LAN reverse proxy must provide TLS (valid cert) and preserve the
+  bearer header; do not run plaintext HTTP across a shared or public LAN.
+- Tokens live in env or macOS Keychain (`service com.cloudiful.stock-operator`,
+  account `operator-bearer-token`), never in `operator.sqlite3`. Env takes
+  precedence. The desktop shows only `configured`/`source` (env/keychain/none).
+- Rotate tokens by saving a new value in the desktop (Keychain) or replacing
+  `STOCK_OPERATOR_AUTH_TOKEN`; clearing a token stops the server until a new
+  one is supplied.
+
+### macOS GUI stays on the Mac
+
+Accessibility and Screen Recording permissions, the trading application window,
+and the OCR helper (`window-ocr`) all execute locally on the Mac. The Linux
+service never drives the broker UI directly — it calls the operator over the
+bearer-authenticated network and the operator serializes a single UI operation
+locally.
 
 ## Desktop
 
@@ -71,10 +214,11 @@ and starts the authenticated HTTP/MCP server in the background when a token is
 configured. Single-instance is enforced so re-opening the app focuses the
 existing window instead of competing with the running server.
 
-- **Connection** tab: stock main-service URL, operator bind/MCP/broker bundle and
-  process settings, traversal limits, bearer-token status and secure entry
-  (Keychain), save/test controls, server and Accessibility status, restart-required
-  notice, instance identifier.
+- **Connection** tab: stock main-service URL, operator network mode/bind/MCP/
+  broker bundle and process settings, traversal limits, bearer-token status and
+  secure entry (Keychain), save/test controls, server and Accessibility status,
+  restart-required notice, instance identifier. Network mode changes require
+  explicit safety acknowledgement.
 - **History** tab: paginated operation history (kind/state/time/payload summary),
   audit event view with operation filter, refresh and empty/loading/error states.
 
@@ -84,9 +228,10 @@ Tauri commands (`window.__TAURI__.core.invoke`) are narrow and typed:
 `list_audit_events`. Secrets are never returned or stored in SQLite.
 
 Ordinary settings are persisted in SQLite and reloaded on restart when env
-overrides are absent. URL, socket address, paths, and numeric bounds are
-validated; loopback-only binding is preserved. Settings that affect the running
-HTTP server or Accessibility inspector are reported as restart-required.
+overrides are absent. URL, socket address, paths, network mode, and numeric
+bounds are validated; private-overlay mode requires acknowledgement. Settings
+that affect the running HTTP server or Accessibility inspector are reported as
+restart-required.
 
 Browser preview without Tauri shows a read-only banner and disables mutations.
 
@@ -155,15 +300,22 @@ Build a stable local app bundle with ad-hoc signing (Tauri shell + OCR helper):
 
 ```sh
 nu package.nu
+# with explicit target (for CI cross builds)
+nu package.nu --target aarch64-apple-darwin
+nu package.nu --target x86_64-apple-darwin
 ```
 
-The bundle is written to `target/stock-operator/Stock Operator.app` with bundle
-identifier `com.cloudiful.stock-operator` and `LSMinimumSystemVersion 26.0`.
-The script builds the release Tauri binary, embeds `ui/`, and adds
-`Contents/Helpers/window-ocr`. If a `target/release/bundle/macos` Tauri bundle
-already exists, it is reused and the helper is injected. Pass `--identity` to
-use an installed Apple code-signing identity. Grant Accessibility and Screen
-Recording permission to this bundle before long-running use.
+The bundle is written to `target/stock-operator/Stock Operator.app` (or
+`target/<target>/stock-operator-…/Stock Operator.app` when `--target` is used)
+with bundle identifier `com.cloudiful.stock-operator` and
+`LSMinimumSystemVersion 26.0`. The script builds the release Tauri binary,
+embeds `ui/`, and adds `Contents/Helpers/window-ocr`. If a
+`target/release/bundle/macos` Tauri bundle already exists, it is reused and the
+helper is injected. Pass `--identity` to use an installed Apple code-signing
+identity. Grant Accessibility and Screen Recording permission to this bundle
+before long-running use. Release archives are `.app.zip` created with
+`ditto -c -k --keepParent` so macOS preserves bundle metadata; a bare binary is
+not sufficient because `window-ocr` and TCC permissions depend on the bundle.
 
 ## Storage
 
@@ -177,9 +329,12 @@ Ordinary settings persisted through the desktop UI and SQLite APIs are:
 stock main-service URL (`STOCK_OPERATOR_MAIN_SERVICE_URL`),
 `STOCK_OPERATOR_BIND_ADDR`, `STOCK_OPERATOR_MCP_PATH`,
 `STOCK_OPERATOR_TARGET_BUNDLE_ID`/`STOCK_OPERATOR_TARGET_PROCESS_NAME`,
-traversal limits (`STOCK_OPERATOR_MAX_DEPTH`/`STOCK_OPERATOR_MAX_NODES`), and a
-generated `operator_instance_id` (`STOCK_OPERATOR_INSTANCE_ID` may configure it).
-On restart, persisted settings are used when env overrides are absent.
+traversal limits (`STOCK_OPERATOR_MAX_DEPTH`/`STOCK_OPERATOR_MAX_NODES`),
+network mode (`STOCK_OPERATOR_NETWORK_MODE` = `loopback` | `private-overlay`),
+and a generated `operator_instance_id` (`STOCK_OPERATOR_INSTANCE_ID` may
+configure it). On restart, persisted settings are used when env overrides are
+absent. `network_mode` defaults to `loopback` and requires explicit
+acknowledgement when set to `private-overlay`.
 
 Bearer tokens (`STOCK_OPERATOR_AUTH_TOKEN`) are stored in macOS Keychain
 (service `com.cloudiful.stock-operator`, account `operator-bearer-token`), never
@@ -205,7 +360,8 @@ STOCK_OPERATOR_DB_PATH=/tmp/operator-test.sqlite3 cargo test
 
 ## HTTP API
 
-Server mode exposes MCP and REST on the same loopback listener:
+Server mode exposes MCP and REST on the same listener (loopback by default,
+private-overlay when explicitly configured):
 
 ```text
 GET  /healthz
@@ -228,6 +384,9 @@ GET  /api/v1/operator/audit/events        # audit trail, authenticated, ?limit&o
 
 `/healthz` and `/api/openapi.json` are public and contain no account data. MCP
 and `/api/v1/operator/*` require the same `Authorization: Bearer ...` token.
+The MCP endpoint path is `STOCK_OPERATOR_MCP_PATH` (default `/mcp`) appended to
+`STOCK_OPERATOR_BIND_ADDR`; `operator_health` reports `endpoint_scope`
+`loopback_only` vs `private_overlay` so callers can distinguish the mode.
 Export the OpenAPI 3.1 document without starting the server:
 
 ```sh
@@ -250,18 +409,54 @@ provides the same redacted history for AI use and does not expose tokens.
 ## Protocol and versioning
 
 See `docs/protocol.md` for the HTTP/MCP compatibility boundary, versioning, and
-live-operation safety gates.
+live-operation safety gates. The stock main-service URL is `STOCK_OPERATOR_MAIN_SERVICE_URL`
+(alias `STOCK_OPERATOR_STOCK_SERVICE_URL` / `STOCK_MAIN_SERVICE_URL` for legacy),
+the MCP path defaults to `/mcp`, and `operator_health` is the compatibility
+probe.
+
+## CI and Release
+
+- **CI** (`.github/workflows/ci.yml` and `.forgejo/workflows/ci.yml`) runs on PRs,
+  pushes to `main`, tags `v*`, and manual dispatch. It installs stable Rust,
+  runs `cargo fmt --all -- --check`, `SQLX_OFFLINE=true cargo check --all-targets`,
+  `cargo test --all-targets`, and validates `tauri.conf.json`, `capabilities/default.json`,
+  `ui/` assets, icons, `package.nu`, and migrations. Forgejo CI is test-focused
+  on Linux (`aio`) because no macOS runner is currently provisioned on the
+  intranet; macOS packaging is exercised on GitHub.
+
+- **Release** on strict `v*` tags (`.github/workflows/release.yml`) builds both
+  macOS targets on GitHub-hosted macOS runners with explicit triples:
+  `aarch64-apple-darwin` on `macos-15` (Apple Silicon M4) and
+  `x86_64-apple-darwin` on `macos-13` (Intel). Each job runs
+  `nu package.nu --target <triple> --output target/stock-operator-<triple>/Stock Operator.app`,
+  verifies `Contents/MacOS/stock-operator` + `Contents/Helpers/window-ocr` +
+  `Contents/Info.plist` + `codesign --verify`, then creates a clickable
+  `.app.zip` via `ditto -c -k --keepParent` (documented reliable equivalent is
+  `zip -r` if `ditto` is unavailable). The bundle is required — a bare binary
+  is not sufficient because OCR/TCC depend on the bundle. `SHA256SUMS` and per-archive
+  `.sha256` are generated and all archives plus checksums are published to a
+  GitHub Release.
+
+- **Forgejo release** (`.forgejo/workflows/release.yml`) is validation-focused on
+  Linux (`aio`) for now and confirms the release assets and GitHub workflow
+  triples. It includes a commented optional `build-macos-optional` job that can
+  be enabled once a self-hosted macOS runner with Xcode/Swift is available.
+  No secrets are included in either workflow.
+
+Verify a release locally with `shasum -a 256 -c SHA256SUMS`.
 
 ## Project status
 
-This is phase 3 (`tauri-desktop`) of the standalone Tauri extraction.
-SQLite persistence, durable live-operation state, and audit history are complete;
-the Tauri v2 desktop shell, double-clickable bundling with `ui/`, Keychain token
-storage, and settings/status/history commands are now implemented. Loopback-only
-binding is preserved; authenticated encrypted transport for Linux-to-Mac remains
-phase 4. The repository retains macOS Accessibility/OCR behavior with durable
-recovery and `Unknown`/`Expired` semantics across restart.
-
-Linux main service to Mac operator topology is loopback by default; cross-machine
-use requires an explicit private overlay or TLS proxy with the same bearer
-token—plaintext HTTP over the public network is not supported.
+This is phase 4 (`network-release`) of the standalone Tauri extraction.
+SQLite persistence, durable live-operation state, audit history, Tauri v2
+desktop shell with Keychain token storage and settings/history commands, and
+double-clickable bundling with `ui/` are complete. **Loopback remains default**;
+a new explicit `private-overlay` network mode permits private-network binds
+(`10/8`, `172.16/12`, `192.168/16`, `100.64/10` Tailscale CGNAT, ULA/link-local)
+with bearer auth and encrypted transport/private overlay, guarded by
+acknowledgement and rejected public/unspecified binds. The repository retains
+macOS Accessibility/OCR behavior with durable recovery and `Unknown`/`Expired`
+semantics across restart. CI and release workflows for both GitHub (macOS
+`aarch64`/`x86_64` .app archives + SHA256SUMS) and Forgejo (test-focused on
+Linux `aio`, optional macOS when runners exist) are now present, and the
+Forgejo remote metadata has been corrected to `https://forgejo.cloud1ful.com/research/stock-operator`.

@@ -48,8 +48,22 @@ pub async fn run() -> Result<()> {
             &config.target_process_name,
             config.max_depth,
             config.max_nodes,
+            &config.network_mode.to_string(),
         )
         .context("failed to seed operator settings")?;
+
+    // Private-overlay with non-loopback must have bearer auth; fail early with clear message.
+    if config.network_mode == crate::config::NetworkMode::PrivateOverlay
+        && !config.bind_addr.ip().is_loopback()
+    {
+        let effective = resolve_effective_token(&config);
+        if effective.is_none() {
+            bail!(
+                "private-overlay mode with non-loopback bind {} requires bearer auth; set STOCK_OPERATOR_AUTH_TOKEN or save a token via desktop Keychain before using private network mode",
+                config.bind_addr
+            );
+        }
+    }
 
     // Ensure instance id exists (generated if not configured)
     let instance_id = storage
