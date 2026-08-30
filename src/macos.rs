@@ -1,6 +1,8 @@
-use anyhow::{Result, bail};
+use std::sync::Arc;
+
+use anyhow::{Context, Result, bail};
 use clap::Parser;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{
     ax::AccessibilityInspector,
@@ -11,14 +13,48 @@ use crate::{
         OperatorService, ReadPanel, ReadRepresentation, ReadRequest, SelectSecurityRequest,
     },
     pages::NavigationTarget,
+    storage::Storage,
 };
 
 pub async fn run() -> Result<()> {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
     let config = OperatorConfig::from_env()?;
+    let storage = Storage::open(&config.db_path).with_context(|| {
+        format!(
+            "failed to initialize SQLite at {}",
+            config.db_path.display()
+        )
+    })?;
+    // Seed ordinary settings for later Tauri UI; do not store secrets here.
+    storage
+        .seed_from_config(
+            config.stock_service_url.as_deref(),
+            &config.bind_addr.to_string(),
+            &config.mcp_path,
+            &config.target_bundle_id,
+            &config.target_process_name,
+            config.max_depth,
+            config.max_nodes,
+        )
+        .context("failed to seed operator settings")?;
+    // Ensure instance id exists (generated if not configured)
+    let instance_id = storage
+        .ensure_instance_id(config.instance_id.clone())
+        .context("failed to ensure operator instance id")?;
+    info!(db_path = %config.db_path.display(), instance_id = %instance_id, "operator storage initialized");
+    let reconciled = storage
+        .reconcile_pending_operations()
+        .context("failed to reconcile pending operations")?;
+    if reconciled > 0 {
+        warn!(
+            count = reconciled,
+            "reconciled abandoned live operations to Unknown/Expired on startup"
+        );
+    }
+
     let inspector = AccessibilityInspector::new(config.clone());
-    let service = OperatorService::new(inspector.clone());
+    let service = OperatorService::new(inspector.clone(), Arc::new(storage));
     if !inspector.request_permission_prompt() {
         info!("Accessibility permission is not granted yet");
     }

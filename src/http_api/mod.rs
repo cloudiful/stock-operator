@@ -2,89 +2,50 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
-    http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    extract::{Path, Query, State},
+    http::HeaderMap,
     routing::{get, post},
 };
-use serde::Serialize;
+use serde::Deserialize;
 use utoipa::{
-    Modify, OpenApi,
+    IntoParams, Modify, OpenApi, ToSchema,
     openapi::security::{Http, HttpAuthScheme, SecurityScheme},
 };
 
 use crate::{
-    operator_service::{
-        ConfirmOperationRequest, LiveOperationResponse, OperatorService,
-        PrepareCancellationRequest, PrepareOrderRequest, ReadRequest, SelectSecurityRequest,
+    operator_service::{OperatorService, ReadRequest, SelectSecurityRequest},
+    operator_types::{
+        AuditHistoryResponse, ConfirmOperationRequest, LiveOperationResponse,
+        OperationHistoryResponse, PrepareCancellationRequest, PrepareOrderRequest,
     },
-    pages::{NavigationTarget, StageOrderRequest, TradePreflightRequest, TradePreflightResult},
+    storage::{LiveOperationKind, LiveOperationState},
 };
+
+mod error;
+pub use error::{ApiError, ErrorResponse, OperatorErrorBody};
 
 #[derive(Clone)]
 pub struct HttpState {
     pub service: OperatorService,
 }
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct ErrorResponse {
-    pub error: OperatorErrorBody,
+#[derive(Debug, Deserialize, ToSchema, IntoParams)]
+pub struct OperationHistoryQuery {
+    #[param(example = 20)]
+    pub limit: Option<usize>,
+    #[param(example = 0)]
+    pub offset: Option<usize>,
+    pub kind: Option<LiveOperationKind>,
+    pub state: Option<LiveOperationState>,
 }
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct OperatorErrorBody {
-    pub code: &'static str,
-    pub message: String,
-    pub retryable: bool,
-}
-
-pub struct ApiError {
-    status: StatusCode,
-    code: &'static str,
-    message: String,
-    retryable: bool,
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        (
-            self.status,
-            Json(ErrorResponse {
-                error: OperatorErrorBody {
-                    code: self.code,
-                    message: self.message,
-                    retryable: self.retryable,
-                },
-            }),
-        )
-            .into_response()
-    }
-}
-
-impl From<anyhow::Error> for ApiError {
-    fn from(error: anyhow::Error) -> Self {
-        let message = format!("{error:#}");
-        let (status, code, retryable) = if message.contains("outcome is unknown") {
-            (StatusCode::SERVICE_UNAVAILABLE, "outcome_unknown", false)
-        } else if message.contains("not found") {
-            (StatusCode::NOT_FOUND, "not_found", false)
-        } else if message.contains("already")
-            || message.contains("does not match")
-            || message.contains("another live operation")
-        {
-            (StatusCode::CONFLICT, "state_conflict", false)
-        } else if message.contains("unavailable") || message.contains("could not be focused") {
-            (StatusCode::SERVICE_UNAVAILABLE, "ui_unavailable", true)
-        } else {
-            (StatusCode::UNPROCESSABLE_ENTITY, "validation_failed", false)
-        };
-        Self {
-            status,
-            code,
-            message,
-            retryable,
-        }
-    }
+#[derive(Debug, Deserialize, ToSchema, IntoParams)]
+pub struct AuditHistoryQuery {
+    #[param(example = 20)]
+    pub limit: Option<usize>,
+    #[param(example = 0)]
+    pub offset: Option<usize>,
+    pub operation_id: Option<String>,
 }
 
 pub fn router(state: HttpState) -> Router {
@@ -108,6 +69,8 @@ pub fn router(state: HttpState) -> Router {
             "/api/v1/operator/operations/{operation_id}/abort",
             post(abort_operation),
         )
+        .route("/api/v1/operator/operations", get(list_operations))
+        .route("/api/v1/operator/audit/events", get(list_audit_events))
         .route(
             "/api/v1/operator/operations/{operation_id}",
             get(get_operation),
@@ -138,7 +101,7 @@ async fn navigate(
     State(state): State<Arc<HttpState>>,
     Path(target): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let target = parse_navigation_target(&target)?;
+    let target = error::parse_navigation_target(&target)?;
     Ok(Json(
         serde_json::to_value(
             state
@@ -165,10 +128,10 @@ async fn select_security(
     ))
 }
 
-#[utoipa::path(post, path = "/api/v1/operator/orders/stage", request_body = StageOrderRequest, responses((status = 200, body = crate::pages::StageOrderResult)), security(("bearer_auth" = [])))]
+#[utoipa::path(post, path = "/api/v1/operator/orders/stage", request_body = crate::pages::StageOrderRequest, responses((status = 200, body = crate::pages::StageOrderResult)), security(("bearer_auth" = [])))]
 async fn stage_order(
     State(state): State<Arc<HttpState>>,
-    Json(request): Json<StageOrderRequest>,
+    Json(request): Json<crate::pages::StageOrderRequest>,
 ) -> Result<Json<crate::pages::StageOrderResult>, ApiError> {
     Ok(Json(
         state
@@ -179,11 +142,11 @@ async fn stage_order(
     ))
 }
 
-#[utoipa::path(post, path = "/api/v1/operator/orders/preflight", request_body = TradePreflightRequest, responses((status = 200, body = TradePreflightResult), (status = 422, body = ErrorResponse)), security(("bearer_auth" = [])))]
+#[utoipa::path(post, path = "/api/v1/operator/orders/preflight", request_body = crate::pages::TradePreflightRequest, responses((status = 200, body = crate::pages::TradePreflightResult), (status = 422, body = ErrorResponse)), security(("bearer_auth" = [])))]
 async fn trade_preflight(
     State(state): State<Arc<HttpState>>,
-    Json(request): Json<TradePreflightRequest>,
-) -> Result<Json<TradePreflightResult>, ApiError> {
+    Json(request): Json<crate::pages::TradePreflightRequest>,
+) -> Result<Json<crate::pages::TradePreflightResult>, ApiError> {
     Ok(Json(
         state
             .service
@@ -202,7 +165,7 @@ async fn prepare_order(
     Ok(Json(
         state
             .service
-            .prepare_order(request, idempotency_key(&headers)?)
+            .prepare_order_http(request, error::idempotency_key(&headers)?)
             .await
             .map_err(ApiError::from)?,
     ))
@@ -217,7 +180,7 @@ async fn prepare_cancellation(
     Ok(Json(
         state
             .service
-            .prepare_cancellation(request, idempotency_key(&headers)?)
+            .prepare_cancellation_http(request, error::idempotency_key(&headers)?)
             .await
             .map_err(ApiError::from)?,
     ))
@@ -232,7 +195,7 @@ async fn confirm_operation(
     Ok(Json(
         state
             .service
-            .confirm_operation(request, idempotency_key(&headers)?)
+            .confirm_operation_http(request, error::idempotency_key(&headers)?)
             .await
             .map_err(ApiError::from)?,
     ))
@@ -260,51 +223,54 @@ async fn abort_operation(
     Ok(Json(
         state
             .service
-            .abort_operation(&operation_id)
+            .abort_operation_http(&operation_id)
             .await
             .map_err(ApiError::from)?,
     ))
 }
 
-fn idempotency_key(headers: &HeaderMap) -> Result<String, ApiError> {
-    headers
-        .get("Idempotency-Key")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .ok_or(ApiError {
-            status: StatusCode::BAD_REQUEST,
-            code: "missing_idempotency_key",
-            message: "Idempotency-Key header is required".to_string(),
-            retryable: false,
-        })
+#[utoipa::path(get, path = "/api/v1/operator/operations", params(OperationHistoryQuery), responses((status = 200, body = OperationHistoryResponse)), security(("bearer_auth" = [])))]
+async fn list_operations(
+    State(state): State<Arc<HttpState>>,
+    Query(query): Query<OperationHistoryQuery>,
+) -> Result<Json<OperationHistoryResponse>, ApiError> {
+    let limit = query.limit.unwrap_or(20).clamp(1, 100);
+    let offset = query.offset.unwrap_or(0);
+    Ok(Json(
+        state
+            .service
+            .list_operations(limit, offset, query.kind, query.state)
+            .map_err(ApiError::from)?,
+    ))
 }
 
-fn parse_navigation_target(target: &str) -> Result<NavigationTarget, ApiError> {
-    match target {
-        "positions" => Ok(NavigationTarget::Positions),
-        "orders" => Ok(NavigationTarget::Orders),
-        "executions" => Ok(NavigationTarget::Executions),
-        "funds" => Ok(NavigationTarget::Funds),
-        _ => Err(ApiError {
-            status: StatusCode::BAD_REQUEST,
-            code: "invalid_target",
-            message: format!("unsupported navigation target: {target}"),
-            retryable: false,
-        }),
-    }
+#[utoipa::path(get, path = "/api/v1/operator/audit/events", params(AuditHistoryQuery), responses((status = 200, body = AuditHistoryResponse)), security(("bearer_auth" = [])))]
+async fn list_audit_events(
+    State(state): State<Arc<HttpState>>,
+    Query(query): Query<AuditHistoryQuery>,
+) -> Result<Json<AuditHistoryResponse>, ApiError> {
+    let limit = query.limit.unwrap_or(20).clamp(1, 100);
+    let offset = query.offset.unwrap_or(0);
+    Ok(Json(
+        state
+            .service
+            .list_audit_events(limit, offset, query.operation_id)
+            .map_err(ApiError::from)?,
+    ))
 }
 
 #[derive(OpenApi)]
 #[openapi(
     info(title = "stock-operator", version = "0.2.12"),
-    paths(view, read, navigate, select_security, stage_order, trade_preflight, prepare_order, prepare_cancellation, confirm_operation, abort_operation, get_operation),
+    paths(view, read, navigate, select_security, stage_order, trade_preflight, prepare_order, prepare_cancellation, confirm_operation, abort_operation, get_operation, list_operations, list_audit_events),
     components(schemas(
-        ReadRequest, SelectSecurityRequest, StageOrderRequest, crate::pages::StageOrderResult,
-        TradePreflightRequest, TradePreflightResult,
+        ReadRequest, SelectSecurityRequest, crate::pages::StageOrderRequest, crate::pages::StageOrderResult,
+        crate::pages::TradePreflightRequest, crate::pages::TradePreflightResult,
         PrepareOrderRequest, PrepareCancellationRequest, crate::pages::CancellationTarget, ConfirmOperationRequest,
-        LiveOperationResponse, ErrorResponse, OperatorErrorBody
+        LiveOperationResponse, OperationHistoryResponse, crate::operator_service::OperationHistoryEntry,
+        AuditHistoryResponse, crate::operator_service::AuditEventResponse,
+        LiveOperationKind, LiveOperationState, OperationHistoryQuery, AuditHistoryQuery,
+        ErrorResponse, OperatorErrorBody
     )),
     modifiers(&SecurityAddon)
 )]
@@ -344,6 +310,8 @@ mod tests {
             "/api/v1/operator/cancellations/prepare",
             "/api/v1/operator/operations/confirm",
             "/api/v1/operator/operations/{operation_id}/abort",
+            "/api/v1/operator/operations",
+            "/api/v1/operator/audit/events",
         ] {
             assert!(paths.contains_key(path), "missing OpenAPI path: {path}");
         }
@@ -352,7 +320,19 @@ mod tests {
             "bearer"
         );
         assert!(value["components"]["schemas"]["StageOrderRequest"].is_object());
+        assert!(value["components"]["schemas"]["OperationHistoryResponse"].is_object());
+        assert!(value["components"]["schemas"]["AuditHistoryResponse"].is_object());
         let document = serde_json::to_string(&value).unwrap();
         assert!(document.contains("#/components/schemas/StageOrderRequest"));
+    }
+
+    #[test]
+    fn history_endpoints_are_authenticated_documented() {
+        let doc = openapi_document();
+        let value = serde_json::to_value(doc).unwrap();
+        let ops = &value["paths"]["/api/v1/operator/operations"]["get"];
+        assert!(ops["security"].is_array());
+        let audit = &value["paths"]["/api/v1/operator/audit/events"]["get"];
+        assert!(audit["security"].is_array());
     }
 }

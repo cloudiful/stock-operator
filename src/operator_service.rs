@@ -1,29 +1,37 @@
 use std::{collections::HashMap, sync::Arc};
 
-use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Duration, Utc};
+use anyhow::Result;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use crate::ax::{AccessibilityInspector, TargetSnapshot};
-use crate::pages::{
-    CancellationTarget, NavigationResult, NavigationTarget, PageReader, StageOrderRequest,
-    StageOrderResult, TradePreflightRequest, TradePreflightResult, ViewDescriptor,
+use crate::{
+    ax::{AccessibilityInspector, TargetSnapshot},
+    pages::{
+        CancellationTarget, NavigationResult, NavigationTarget, PageReader, StageOrderRequest,
+        StageOrderResult, TradePreflightRequest, TradePreflightResult, ViewDescriptor,
+    },
+    storage::Storage,
 };
 
-const OPERATION_TTL_SECONDS: i64 = 30;
+pub use crate::operator_types::{
+    AuditEventResponse, AuditHistoryResponse, ConfirmOperationRequest, LiveOperationResponse,
+    OperationHistoryEntry, OperationHistoryResponse, OperatorError, PrepareCancellationRequest,
+    PrepareOrderRequest,
+};
+pub use crate::storage::{LiveOperationKind, LiveOperationState};
+
+use chrono::{DateTime, Utc};
 
 #[derive(Clone)]
 pub struct OperatorService {
-    inspector: AccessibilityInspector,
-    pages: PageReader,
-    ui_lock: Arc<Mutex<()>>,
-    operations: Arc<Mutex<HashMap<Uuid, LiveOperation>>>,
-    idempotency: Arc<Mutex<HashMap<String, Uuid>>>,
+    pub(crate) inspector: AccessibilityInspector,
+    pub(crate) pages: PageReader,
+    pub(crate) ui_lock: Arc<Mutex<()>>,
+    pub(crate) storage: Arc<Storage>,
+    pub(crate) confirmation_tokens: Arc<Mutex<HashMap<Uuid, String>>>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
@@ -55,74 +63,21 @@ pub struct SelectSecurityRequest {
     pub security_code: String,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum LiveOperationKind {
-    SubmitOrder,
-    CancelOrder,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum LiveOperationState {
-    ConfirmationOpened,
-    Confirming,
-    Confirmed,
-    Unknown,
-    Expired,
-    Aborted,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
-pub struct PrepareOrderRequest {
-    pub order: StageOrderRequest,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
-pub struct PrepareCancellationRequest {
-    pub target: CancellationTarget,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
-pub struct ConfirmOperationRequest {
-    pub operation_id: String,
-    pub confirmation_token: String,
-    pub fingerprint: String,
-}
-
-#[derive(Clone, Debug, JsonSchema, Serialize, ToSchema)]
-pub struct LiveOperationResponse {
-    pub operation_id: String,
-    pub kind: LiveOperationKind,
-    pub state: LiveOperationState,
-    pub confirmation_token: Option<String>,
-    pub fingerprint: String,
-    pub expires_at: DateTime<Utc>,
-}
-
-#[derive(Clone, Debug)]
-struct LiveOperation {
-    response: LiveOperationResponse,
-    confirmation_token: String,
-    payload: LivePayload,
-    idempotency_key: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-enum LivePayload {
-    Order(StageOrderRequest),
-    Cancellation(CancellationTarget),
-}
-
 impl OperatorService {
-    pub fn new(inspector: AccessibilityInspector) -> Self {
+    pub fn new(inspector: AccessibilityInspector, storage: Arc<Storage>) -> Self {
         Self {
             pages: PageReader::new(inspector.clone()),
             inspector,
             ui_lock: Arc::new(Mutex::new(())),
-            operations: Arc::new(Mutex::new(HashMap::new())),
-            idempotency: Arc::new(Mutex::new(HashMap::new())),
+            storage,
+            confirmation_tokens: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    #[cfg(test)]
+    pub fn new_in_memory(inspector: AccessibilityInspector) -> Self {
+        let storage = Storage::open_in_memory().expect("in-memory storage");
+        Self::new(inspector, Arc::new(storage))
     }
 
     pub async fn snapshot(&self, max_depth: usize, max_nodes: usize) -> Result<TargetSnapshot> {
@@ -202,7 +157,7 @@ impl OperatorService {
                 json(self.pages.cancellations_ocr()?)
             }
             (ReadPanel::Cancellations, ReadRepresentation::Structured) => {
-                bail!("structured cancellation records are not implemented")
+                anyhow::bail!("structured cancellation records are not implemented")
             }
         }
     }
@@ -274,305 +229,122 @@ impl OperatorService {
         self.pages.confirm_cancel_order(target)
     }
 
-    pub async fn prepare_order(
-        &self,
-        request: PrepareOrderRequest,
-        idempotency_key: String,
-    ) -> Result<LiveOperationResponse> {
-        let _guard = self.ui_lock.lock().await;
-        self.require_new_idempotency_key(&idempotency_key).await?;
-        self.require_no_active_live_operation().await?;
-        self.pages.open_order_confirmation(request.order.clone())?;
-        self.create_operation(
-            LiveOperationKind::SubmitOrder,
-            LivePayload::Order(request.order),
-            Some(idempotency_key),
-        )
-        .await
+    pub fn storage(&self) -> &Storage {
+        &self.storage
     }
 
-    pub async fn prepare_cancellation(
+    pub async fn operation(
         &self,
-        request: PrepareCancellationRequest,
-        idempotency_key: String,
-    ) -> Result<LiveOperationResponse> {
-        let _guard = self.ui_lock.lock().await;
-        self.require_new_idempotency_key(&idempotency_key).await?;
-        self.require_no_active_live_operation().await?;
-        self.pages.open_cancel_confirmation(&request.target)?;
-        self.create_operation(
-            LiveOperationKind::CancelOrder,
-            LivePayload::Cancellation(request.target),
-            Some(idempotency_key),
-        )
-        .await
-    }
-
-    pub async fn confirm_operation(
-        &self,
-        request: ConfirmOperationRequest,
-        idempotency_key: String,
-    ) -> Result<LiveOperationResponse> {
-        let operation = self.validated_operation(&request, &idempotency_key).await?;
-        let _guard = self.ui_lock.lock().await;
-        let confirmation = match &operation.payload {
-            LivePayload::Order(order) => self.pages.confirm_open_order(order.clone()).map(|_| ()),
-            LivePayload::Cancellation(target) => self.pages.confirm_cancel_order(target),
-        };
-        let state = if confirmation.is_ok() {
-            LiveOperationState::Confirmed
+        operation_id: &str,
+    ) -> Result<LiveOperationResponse, OperatorError> {
+        let op = self
+            .storage
+            .get_operation(operation_id)
+            .map_err(OperatorError::Storage)?
+            .ok_or(OperatorError::NotFound)?;
+        let token = if op.state == LiveOperationState::ConfirmationOpened {
+            let id = Uuid::parse_str(operation_id)
+                .map_err(|_| OperatorError::Validation("invalid operation_id".to_string()))?;
+            self.confirmation_tokens.lock().await.get(&id).cloned()
         } else {
-            LiveOperationState::Unknown
+            None
         };
-        let mut operations = self.operations.lock().await;
-        let operation_id =
-            Uuid::parse_str(&request.operation_id).context("invalid operation_id")?;
-        let stored = operations
-            .get_mut(&operation_id)
-            .context("operation disappeared during confirmation")?;
-        stored.response.state = state;
-        stored.confirmation_token.clear();
-        if let Err(error) = confirmation {
-            return Err(
-                error.context("confirmation outcome is unknown; do not retry automatically")
-            );
-        }
-        Ok(public_response(stored))
+        Ok(to_response(&op, token))
     }
 
-    pub async fn operation(&self, operation_id: &str) -> Result<LiveOperationResponse> {
-        let operation_id = Uuid::parse_str(operation_id).context("invalid operation_id")?;
-        let mut operations = self.operations.lock().await;
-        let operation = operations
-            .get_mut(&operation_id)
-            .context("operation not found")?;
-        expire(operation);
-        Ok(public_response(operation))
-    }
-
-    pub async fn abort_operation(&self, operation_id: &str) -> Result<LiveOperationResponse> {
-        let operation_id = Uuid::parse_str(operation_id).context("invalid operation_id")?;
-        let operation = {
-            let operations = self.operations.lock().await;
-            operations
-                .get(&operation_id)
-                .context("operation not found")?
-                .clone()
-        };
-        if !matches!(
-            operation.response.state,
-            LiveOperationState::ConfirmationOpened | LiveOperationState::Expired
-        ) {
-            bail!("operation cannot be aborted in its current state");
-        }
-        let _guard = self.ui_lock.lock().await;
-        let result = match &operation.payload {
-            LivePayload::Order(order) => self.pages.cancel_order_confirmation(order),
-            LivePayload::Cancellation(target) => {
-                self.pages.cancel_cancellation_confirmation(target)
-            }
-        };
-        let mut operations = self.operations.lock().await;
-        let stored = operations
-            .get_mut(&operation_id)
-            .context("operation not found")?;
-        stored.response.state = if result.is_ok() {
-            LiveOperationState::Aborted
-        } else {
-            LiveOperationState::Unknown
-        };
-        stored.confirmation_token.clear();
-        result.context("abort outcome is unknown; inspect the broker dialog")?;
-        Ok(public_response(stored))
-    }
-
-    async fn create_operation(
+    pub fn list_operations(
         &self,
-        kind: LiveOperationKind,
-        payload: LivePayload,
-        idempotency_key: Option<String>,
-    ) -> Result<LiveOperationResponse> {
-        let operation_id = Uuid::new_v4();
-        let confirmation_token = Uuid::new_v4().simple().to_string();
-        let fingerprint = fingerprint(kind, &payload)?;
-        let expires_at = Utc::now() + Duration::seconds(OPERATION_TTL_SECONDS);
-        let response = LiveOperationResponse {
-            operation_id: operation_id.to_string(),
-            kind,
-            state: LiveOperationState::ConfirmationOpened,
-            confirmation_token: Some(confirmation_token.clone()),
-            fingerprint,
-            expires_at,
-        };
-        self.operations.lock().await.insert(
-            operation_id,
-            LiveOperation {
-                response: response.clone(),
-                confirmation_token,
-                payload,
-                idempotency_key: idempotency_key.clone(),
-            },
-        );
-        if let Some(key) = idempotency_key {
-            self.idempotency.lock().await.insert(key, operation_id);
-        }
-        Ok(response)
+        limit: usize,
+        offset: usize,
+        kind: Option<LiveOperationKind>,
+        state: Option<LiveOperationState>,
+    ) -> Result<OperationHistoryResponse, OperatorError> {
+        let ops = self
+            .storage
+            .list_operations(limit, offset, kind, state)
+            .map_err(OperatorError::Storage)?;
+        let total = self
+            .storage
+            .count_operations(kind, state)
+            .map_err(OperatorError::Storage)?;
+        let entries = ops
+            .iter()
+            .map(|op| OperationHistoryEntry {
+                operation_id: op.id.clone(),
+                kind: op.kind,
+                state: op.state,
+                fingerprint: op.fingerprint.clone(),
+                created_at: op.created_at,
+                expires_at: op.expires_at,
+                updated_at: op.updated_at,
+                payload_summary: op.payload_summary.clone(),
+                result_summary: op.result_summary.clone(),
+                actor_source: op.actor_source.clone(),
+            })
+            .collect();
+        Ok(OperationHistoryResponse {
+            operations: entries,
+            total,
+            limit,
+            offset,
+        })
     }
 
-    async fn validated_operation(
+    pub fn list_audit_events(
         &self,
-        request: &ConfirmOperationRequest,
-        idempotency_key: &str,
-    ) -> Result<LiveOperation> {
-        let operation_id =
-            Uuid::parse_str(&request.operation_id).context("invalid operation_id")?;
-        if self.idempotency.lock().await.get(idempotency_key) != Some(&operation_id) {
-            bail!("idempotency key is not bound to the requested operation");
-        }
-        let mut operations = self.operations.lock().await;
-        let operation = operations
-            .get_mut(&operation_id)
-            .context("operation not found")?;
-        expire(operation);
-        if operation.response.state != LiveOperationState::ConfirmationOpened {
-            bail!("operation is not awaiting confirmation");
-        }
-        if operation.confirmation_token != request.confirmation_token {
-            bail!("confirmation token does not match");
-        }
-        if operation.response.fingerprint != request.fingerprint {
-            bail!("operation fingerprint does not match");
-        }
-        if operation.idempotency_key.as_deref() != Some(idempotency_key) {
-            bail!("idempotency key does not match the prepared operation");
-        }
-        operation.response.state = LiveOperationState::Confirming;
-        Ok(operation.clone())
+        limit: usize,
+        offset: usize,
+        operation_id: Option<String>,
+    ) -> Result<AuditHistoryResponse, OperatorError> {
+        let events = self
+            .storage
+            .list_audit_events(limit, offset, operation_id.as_deref())
+            .map_err(OperatorError::Storage)?;
+        let total = self
+            .storage
+            .count_audit_events(operation_id.as_deref())
+            .map_err(OperatorError::Storage)?;
+        let responses = events
+            .into_iter()
+            .map(|e| AuditEventResponse {
+                id: e.id,
+                operation_id: e.operation_id,
+                event_type: e.event_type,
+                from_state: e.from_state,
+                to_state: e.to_state,
+                created_at: e.created_at,
+                actor_source: e.actor_source,
+                detail: e.detail,
+                fingerprint: e.fingerprint,
+            })
+            .collect();
+        Ok(AuditHistoryResponse {
+            events: responses,
+            total,
+            limit,
+            offset,
+        })
     }
+}
 
-    async fn require_new_idempotency_key(&self, key: &str) -> Result<()> {
-        if key.trim().is_empty() {
-            bail!("Idempotency-Key is required");
-        }
-        if self.idempotency.lock().await.contains_key(key) {
-            bail!("Idempotency-Key has already been used");
-        }
-        Ok(())
+pub(crate) fn to_response(
+    record: &crate::storage::OperationRecord,
+    confirmation_token: Option<String>,
+) -> LiveOperationResponse {
+    let mut token = confirmation_token;
+    if record.state != LiveOperationState::ConfirmationOpened {
+        token = None;
     }
-
-    async fn require_no_active_live_operation(&self) -> Result<()> {
-        let mut operations = self.operations.lock().await;
-        for operation in operations.values_mut() {
-            expire(operation);
-            if matches!(
-                operation.response.state,
-                LiveOperationState::ConfirmationOpened
-                    | LiveOperationState::Confirming
-                    | LiveOperationState::Expired
-                    | LiveOperationState::Unknown
-            ) {
-                bail!("another live operation still owns the broker dialog");
-            }
-        }
-        Ok(())
+    LiveOperationResponse {
+        operation_id: record.id.clone(),
+        kind: record.kind,
+        state: record.state,
+        confirmation_token: token,
+        fingerprint: record.fingerprint.clone(),
+        expires_at: record.expires_at,
     }
 }
 
 fn json(value: impl Serialize) -> Result<serde_json::Value> {
     Ok(serde_json::to_value(value)?)
-}
-
-fn fingerprint(kind: LiveOperationKind, payload: &LivePayload) -> Result<String> {
-    let payload = match payload {
-        LivePayload::Order(order) => serde_json::to_vec(&(kind, order))?,
-        LivePayload::Cancellation(target) => serde_json::to_vec(&(kind, target))?,
-    };
-    Ok(Sha256::digest(payload)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
-}
-
-fn expire(operation: &mut LiveOperation) {
-    if matches!(
-        operation.response.state,
-        LiveOperationState::ConfirmationOpened | LiveOperationState::Confirming
-    ) && Utc::now() >= operation.response.expires_at
-    {
-        operation.response.state = LiveOperationState::Expired;
-        operation.confirmation_token.clear();
-    }
-}
-
-fn public_response(operation: &LiveOperation) -> LiveOperationResponse {
-    let mut response = operation.response.clone();
-    if response.state != LiveOperationState::ConfirmationOpened {
-        response.confirmation_token = None;
-    }
-    response
-}
-
-#[cfg(test)]
-mod tests {
-    use chrono::{Duration, Utc};
-
-    use super::{
-        LiveOperation, LiveOperationKind, LiveOperationResponse, LiveOperationState, LivePayload,
-        expire, fingerprint, public_response,
-    };
-    use crate::pages::{CancellationTarget, OrderSide, StageOrderRequest};
-
-    fn order() -> StageOrderRequest {
-        StageOrderRequest {
-            security_code: "600028".to_string(),
-            side: OrderSide::Buy,
-            price: "4.55".to_string(),
-            quantity: 100,
-        }
-    }
-
-    #[test]
-    fn fingerprint_is_stable_and_payload_bound() {
-        let first =
-            fingerprint(LiveOperationKind::SubmitOrder, &LivePayload::Order(order())).unwrap();
-        let second =
-            fingerprint(LiveOperationKind::SubmitOrder, &LivePayload::Order(order())).unwrap();
-        assert_eq!(first, second);
-        assert_eq!(first.len(), 64);
-        assert_ne!(
-            first,
-            fingerprint(
-                LiveOperationKind::CancelOrder,
-                &LivePayload::Cancellation(CancellationTarget {
-                    contract_id: "3506784".to_string(),
-                    security_code: "600028".to_string(),
-                    security_name: "中国石化".to_string(),
-                    side: "买入".to_string(),
-                    price: "4.55".to_string(),
-                    quantity: 100,
-                }),
-            )
-            .unwrap()
-        );
-    }
-
-    #[test]
-    fn expired_operation_hides_confirmation_token() {
-        let mut operation = LiveOperation {
-            response: LiveOperationResponse {
-                operation_id: uuid::Uuid::new_v4().to_string(),
-                kind: LiveOperationKind::SubmitOrder,
-                state: LiveOperationState::ConfirmationOpened,
-                confirmation_token: Some("secret".to_string()),
-                fingerprint: "fingerprint".to_string(),
-                expires_at: Utc::now() - Duration::seconds(1),
-            },
-            confirmation_token: "secret".to_string(),
-            payload: LivePayload::Order(order()),
-            idempotency_key: Some("key".to_string()),
-        };
-        expire(&mut operation);
-        assert_eq!(operation.response.state, LiveOperationState::Expired);
-        assert!(public_response(&operation).confirmation_token.is_none());
-    }
 }

@@ -123,6 +123,38 @@ identifier `com.cloudiful.stock-operator`. Pass `--identity` to use an installed
 Apple code-signing identity. Grant Accessibility and Screen Recording permission
 to this bundle before long-running use.
 
+## Storage
+
+SQLite stores ordinary operator settings and durable operation history at
+`~/Library/Application Support/Stock Operator/operator.sqlite3` (configurable
+via `STOCK_OPERATOR_DB_PATH`). Parent directories are created and
+`migrations/0001_initial.sql` is applied at startup; a clear error is reported
+if SQLite cannot initialize. Ordinary settings persisted for the upcoming Tauri
+UI are: stock main-service URL (`STOCK_OPERATOR_MAIN_SERVICE_URL`),
+`STOCK_OPERATOR_BIND_ADDR`, `STOCK_OPERATOR_MCP_PATH`,
+`STOCK_OPERATOR_TARGET_BUNDLE_ID`/`STOCK_OPERATOR_TARGET_PROCESS_NAME`,
+traversal limits (`STOCK_OPERATOR_MAX_DEPTH`/`STOCK_OPERATOR_MAX_NODES`), and a
+generated `operator_instance_id` (`STOCK_OPERATOR_INSTANCE_ID` may configure it).
+Bearer tokens (`STOCK_OPERATOR_AUTH_TOKEN`) and one-time confirmation tokens are
+never written to SQLite; they remain environment-only / in-memory and will move
+to macOS Keychain in a later phase.
+
+Live operations and audit events are persisted with redacted summaries
+(security code / side / price / quantity only, fingerprint retained). No
+`Authorization` header or raw request payload containing secrets is stored. Writes
+for state transitions are atomic with their audit event. SQLite access never
+holds a mutex while performing Accessibility UI calls; pending
+`ConfirmationOpened`/`Confirming` operations are reconciled on startup to
+`Expired` (if TTL elapsed) or `Unknown` so an abandoned broker dialog cannot
+silently resume, and any unresolved terminal `Unknown`/`Expired` operation still
+blocks new live operations until explicitly aborted.
+
+Use an isolated path for development/tests:
+
+```sh
+STOCK_OPERATOR_DB_PATH=/tmp/operator-test.sqlite3 cargo test
+```
+
 ## HTTP API
 
 Server mode exposes MCP and REST on the same loopback listener:
@@ -142,6 +174,8 @@ POST /api/v1/operator/cancellations/prepare
 POST /api/v1/operator/operations/confirm
 POST /api/v1/operator/operations/{operation_id}/abort
 GET  /api/v1/operator/operations/{operation_id}
+GET  /api/v1/operator/operations          # history, authenticated, ?limit&offset&kind&state
+GET  /api/v1/operator/audit/events        # audit trail, authenticated, ?limit&offset&operation_id
 ```
 
 `/healthz` and `/api/openapi.json` are public and contain no account data. MCP
@@ -161,6 +195,10 @@ unknown confirmation outcome is not retryable. Use the abort endpoint to close
 a still-open confirmation dialog. An unknown or abandoned live operation blocks
 new live operations until it is explicitly resolved.
 
+The history endpoints power the upcoming Tauri UI; they expose the SQLite-backed
+operation state after restart. The MCP read-only tool `list_recent_operations`
+provides the same redacted history for AI use and does not expose tokens.
+
 ## Protocol and versioning
 
 See `docs/protocol.md` for the HTTP/MCP compatibility boundary, versioning, and
@@ -168,11 +206,13 @@ live-operation safety gates.
 
 ## Project status
 
-This is phase 1 of the standalone Tauri extraction (`standalone-extract`).
-SQLite persistence, audit/history endpoints, and the Tauri desktop UI are
-intentionally not yet implemented; those belong to subsequent phases. This
-repository retains the existing in-memory live-operation state, loopback-only
-binding, and macOS Accessibility/OCR behavior from the parent.
+This is phase 2 (`sqlite-audit`) of the standalone Tauri extraction.
+SQLite persistence, durable live-operation state, audit history, and
+history/status HTTP endpoints (plus a read-only `list_recent_operations` MCP
+tool) are implemented. The Tauri desktop shell and double-clickable bundling
+remain for a later phase. The repository retains loopback-only binding and
+macOS Accessibility/OCR behavior, now with durable recovery and `Unknown`/`Expired`
+semantics across restart.
 
-No secrets or bearer tokens are persisted; `STOCK_OPERATOR_AUTH_TOKEN` remains
-environment-only.
+Bearer and confirmation tokens are not persisted; `STOCK_OPERATOR_AUTH_TOKEN`
+remains environment-only (Keychain boundary planned).

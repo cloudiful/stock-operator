@@ -24,7 +24,8 @@ use super::{
     ax::AccessibilityInspector,
     config::OperatorConfig,
     http_api::{self, HttpState},
-    operator_service::{ConfirmOperationRequest, OperatorService, PrepareOrderRequest},
+    operator_service::OperatorService,
+    operator_types::{ConfirmOperationRequest, PrepareOrderRequest},
     pages::{
         ExecutionStructuredSnapshot, ExecutionsSnapshot, FundsSnapshot, FundsStructuredSnapshot,
         NavigationCandidates, NavigationResult, NavigationTarget, OcrSnapshot,
@@ -61,6 +62,16 @@ struct HealthResult {
     mode: &'static str,
     mutations_enabled: bool,
     endpoint_scope: &'static str,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
+struct ListOperationsArgs {
+    #[schemars(description = "Maximum number of recent operations to return (1-100, default 20)")]
+    limit: Option<usize>,
+    #[schemars(description = "Filter by kind: submit_order or cancel_order")]
+    kind: Option<String>,
+    #[schemars(description = "Filter by state")]
+    state: Option<String>,
 }
 
 #[tool_router(router = tool_router)]
@@ -481,6 +492,37 @@ impl OperatorMcpServer {
             .map(Json)
             .map_err(internal_error)
     }
+
+    #[tool(
+        name = "list_recent_operations",
+        description = "List recent live operations with redacted summaries and state for audit history. Read-only and never exposes bearer or confirmation tokens. Prefer HTTP GET /api/v1/operator/operations for UI pagination."
+    )]
+    async fn list_recent_operations(
+        &self,
+        Parameters(args): Parameters<ListOperationsArgs>,
+    ) -> Result<Json<super::operator_service::OperationHistoryResponse>, McpError> {
+        let limit = args.limit.unwrap_or(20).clamp(1, 100);
+        let kind = args.kind.and_then(|k| match k.as_str() {
+            "submit_order" => Some(super::operator_service::LiveOperationKind::SubmitOrder),
+            "cancel_order" => Some(super::operator_service::LiveOperationKind::CancelOrder),
+            _ => None,
+        });
+        let state = args.state.and_then(|s| match s.as_str() {
+            "confirmation_opened" => {
+                Some(super::operator_service::LiveOperationState::ConfirmationOpened)
+            }
+            "confirming" => Some(super::operator_service::LiveOperationState::Confirming),
+            "confirmed" => Some(super::operator_service::LiveOperationState::Confirmed),
+            "unknown" => Some(super::operator_service::LiveOperationState::Unknown),
+            "expired" => Some(super::operator_service::LiveOperationState::Expired),
+            "aborted" => Some(super::operator_service::LiveOperationState::Aborted),
+            _ => None,
+        });
+        self.service
+            .list_operations(limit, 0, kind, state)
+            .map(Json)
+            .map_err(internal_error)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
@@ -506,7 +548,7 @@ impl ServerHandler for OperatorMcpServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2026_07_28)
             .with_instructions(
-        "Local macOS stock operator. It may inspect the configured trading application, navigate allowlisted panels, stage verified values, and expose explicitly confirmed live order/cancellation operations. Live operations require short-lived fingerprints and one-time confirmation; it cannot call arbitrary commands.",
+        "Local macOS stock operator. It may inspect the configured trading application, navigate allowlisted panels, stage verified values, expose explicitly confirmed live operations, and list recent operation history with redacted summaries. Live operations require short-lived fingerprints and one-time confirmation; it cannot call arbitrary commands. History is available via GET /api/v1/operator/operations and GET /api/v1/operator/audit/events.",
             )
     }
 
@@ -621,6 +663,8 @@ fn internal_error(error: impl std::fmt::Display) -> McpError {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -630,6 +674,7 @@ mod tests {
     use super::build_router;
     use crate::{
         ax::AccessibilityInspector, config::OperatorConfig, operator_service::OperatorService,
+        storage::Storage,
     };
 
     #[tokio::test]
@@ -637,7 +682,8 @@ mod tests {
         let mut config = OperatorConfig::from_env().unwrap();
         config.auth_token = Some("test-token".to_string());
         let inspector = AccessibilityInspector::new(config.clone());
-        let service = OperatorService::new(inspector.clone());
+        let storage = Arc::new(Storage::open_in_memory().unwrap());
+        let service = OperatorService::new(inspector.clone(), storage);
         let app = build_router(&config, inspector, service).unwrap();
 
         for path in ["/healthz", "/api/openapi.json"] {

@@ -15,13 +15,19 @@ mod config;
 #[cfg(target_os = "macos")]
 mod http_api;
 #[cfg(target_os = "macos")]
+mod live_ops;
+#[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
 mod mcp;
 #[cfg(target_os = "macos")]
 mod operator_service;
 #[cfg(target_os = "macos")]
+mod operator_types;
+#[cfg(target_os = "macos")]
 mod pages;
+#[cfg(target_os = "macos")]
+mod storage;
 
 #[cfg(target_os = "macos")]
 #[tokio::main]
