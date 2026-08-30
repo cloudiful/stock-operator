@@ -13,6 +13,8 @@ mod cli;
 #[cfg(target_os = "macos")]
 mod config;
 #[cfg(target_os = "macos")]
+mod desktop;
+#[cfg(target_os = "macos")]
 mod http_api;
 #[cfg(target_os = "macos")]
 mod live_ops;

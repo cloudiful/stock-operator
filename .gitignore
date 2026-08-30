@@ -9,3 +9,6 @@ target/stock-operator/
 *.db
 *.sqlite
 *.sqlite-journal
+/gen/
+capabilities/gen/
+ui/dist/

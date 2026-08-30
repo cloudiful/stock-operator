@@ -5,14 +5,14 @@ use std::collections::HashMap;
 
 use super::Storage;
 
-const SETTING_INSTANCE_ID: &str = "operator_instance_id";
-const SETTING_STOCK_SERVICE_URL: &str = "stock_main_service_url";
-const SETTING_BIND_ADDR: &str = "bind_addr";
-const SETTING_MCP_PATH: &str = "mcp_path";
-const SETTING_TARGET_BUNDLE_ID: &str = "target_bundle_id";
-const SETTING_TARGET_PROCESS_NAME: &str = "target_process_name";
-const SETTING_MAX_DEPTH: &str = "max_depth";
-const SETTING_MAX_NODES: &str = "max_nodes";
+pub(crate) const SETTING_INSTANCE_ID: &str = "operator_instance_id";
+pub(crate) const SETTING_STOCK_SERVICE_URL: &str = "stock_main_service_url";
+pub(crate) const SETTING_BIND_ADDR: &str = "bind_addr";
+pub(crate) const SETTING_MCP_PATH: &str = "mcp_path";
+pub(crate) const SETTING_TARGET_BUNDLE_ID: &str = "target_bundle_id";
+pub(crate) const SETTING_TARGET_PROCESS_NAME: &str = "target_process_name";
+pub(crate) const SETTING_MAX_DEPTH: &str = "max_depth";
+pub(crate) const SETTING_MAX_NODES: &str = "max_nodes";
 
 impl Storage {
     pub fn ensure_instance_id(&self, configured: Option<String>) -> Result<String> {
@@ -54,6 +54,13 @@ impl Storage {
             params![key, value, now],
         )
         .with_context(|| format!("failed to set setting {key}"))?;
+        Ok(())
+    }
+
+    pub fn delete_setting(&self, key: &str) -> Result<()> {
+        let conn = self.conn.lock().expect("storage mutex poisoned");
+        conn.execute("DELETE FROM operator_settings WHERE key = ?1", params![key])
+            .with_context(|| format!("failed to delete setting {key}"))?;
         Ok(())
     }
 

@@ -6,33 +6,49 @@ This document records the HTTP/MCP boundary preserved by the standalone
 `stock-operator` extract and explicitly scopes work that remains for later
 phases. It does not claim features that are not yet implemented.
 
-## Current implementation (phase 2: sqlite-audit)
+## Current implementation (phase 3: tauri-desktop)
 
 - **Source**: Extracted from `stock-goes-stonk/apps/stock-operator` at
-  `25abae0b9353d75d6b3bde8066090b0cd569349f`, phase 1 baseline
-  `5c45f1c763095ea8e02489602f739ef1a0fbe066`.
+  `25abae0b9353d75d6b3bde8066090b0cd569349f`, phase 2 baseline
+  `b31e3b423cc707ed39bf70bb8676a5b8527bf65c`.
 - **Platform**: macOS-only. Non-macOS builds emit a stub and exit; macOS builds
   use Accessibility (`axuielement`), ScreenCaptureKit/Vision OCR helper
   (`macos/window_ocr.swift`), bundle identifier
-  `com.cloudiful.stock-operator`, and single-instance UI serialization.
-- **Config**: Environment-driven with SQLite-backed ordinary settings.
-  `STOCK_OPERATOR_AUTH_TOKEN` remains environment-only. `STOCK_OPERATOR_DB_PATH`
-  overrides the per-user default `~/Library/Application Support/Stock Operator/operator.sqlite3`
-  (created with parents, WAL + FK). Ordinary settings seeded from env and
-  persisted: `STOCK_OPERATOR_MAIN_SERVICE_URL` (alias `STOCK_OPERATOR_STOCK_SERVICE_URL`),
-  bind/MCP path, `STOCK_OPERATOR_TARGET_BUNDLE_ID`/`STOCK_OPERATOR_TARGET_PROCESS_NAME`,
-  traversal limits, and `operator_instance_id` (`STOCK_OPERATOR_INSTANCE_ID` may configure,
-  otherwise generated UUID persisted).
+  `com.cloudiful.stock-operator` (`LSMinimumSystemVersion 26.0`), and
+  single-instance UI serialization via `tauri-plugin-single-instance`.
+- **Desktop**: Tauri v2 shell (`tauri.conf.json`, `capabilities/default.json`,
+  `ui/` vanilla HTML/CSS/JS, `src/desktop/` commands). Double-clicking the
+  `.app` with no CLI arguments opens the window; `stock-operator serve` is the
+  explicit headless/server path. Background HTTP/MCP server shares the same
+  `OperatorService`/`Storage` instance as Tauri commands. First-run without a
+  token remains usable; saving a token (Keychain) makes the server available
+  without an unsafe fallback. Single-instance prevents competing UI/server
+  processes.
+- **Config**: Env-over-SQLite with validation. `STOCK_OPERATOR_AUTH_TOKEN` is
+  env-preferred or Keychain (`com.cloudiful.stock-operator` /
+  `operator-bearer-token`), never SQLite. `STOCK_OPERATOR_DB_PATH` overrides the
+  per-user default `~/Library/Application Support/Stock Operator/operator.sqlite3`
+  (created with parents, WAL + FK). Ordinary settings persisted and reloaded on
+  restart when env absent: `STOCK_OPERATOR_MAIN_SERVICE_URL` (alias
+  `STOCK_OPERATOR_STOCK_SERVICE_URL`), bind/MCP path, `STOCK_OPERATOR_TARGET_BUNDLE_ID`/
+  `STOCK_OPERATOR_TARGET_PROCESS_NAME`, traversal limits, and `operator_instance_id`.
+  URL, socket address, paths, and numeric bounds are validated; loopback-only
+  binding is enforced. Server/inspector-affecting changes are reported as
+  restart-required.
 - **Storage**: `rusqlite 0.32.1` (bundled) behind synchronous repository
   (`src/storage.rs`), migrations in `migrations/0001_initial.sql`. Tables:
-  `operator_settings`, `operations` ( durable live state + redacted payload, one-time
-  confirmation tokens never persisted), `audit_events`. Bearer tokens never stored in
-  SQLite; Keychain is the planned secret boundary. Redacted summaries store only
-  security code / side / price / quantity and fingerprint.
-- **Build**: `build.rs` compiles the OCR helper via `xcrun swiftc` when on
-  macOS; missing `swiftc`/SDK is a warning, not a hard error.
-- **Package**: `nu package.nu` builds the release binary and helper and
-  produces `target/stock-operator/Stock Operator.app` with ad-hoc signing.
+  `operator_settings`, `operations` (durable live state + redacted payload,
+  one-time confirmation tokens never persisted), `audit_events`. Bearer tokens
+  live in Keychain; Keychain unavailability returns a clear non-secret error
+  without plaintext fallback. Redacted summaries store only security code /
+  side / price / quantity and fingerprint.
+- **Build**: `build.rs` combines `tauri_build::try_build` (embedding
+  `tauri.conf.json` + `ui/`) with the OCR helper `xcrun swiftc` when on macOS;
+  missing `swiftc`/SDK or Tauri context is a warning, not a hard error.
+- **Package**: `nu package.nu` builds the release Tauri binary, embeds `ui/`,
+  and produces `target/stock-operator/Stock Operator.app` with ad-hoc signing
+  and `Contents/Helpers/window-ocr`. When a `target/release/bundle/macos`
+  Tauri bundle exists it is reused and the helper is injected.
 
 ## HTTP surface
 
@@ -62,10 +78,28 @@ single-operation fetch. All new paths are authenticated and included in the
 generated utoipa OpenAPI document.
 
 `/healthz` and `/api/openapi.json` are public. All other paths require
-`Authorization: Bearer <token>` matching `STOCK_OPERATOR_AUTH_TOKEN`.
+`Authorization: Bearer <token>` matching the env or Keychain token.
 
 OpenAPI is exportable without starting the server:
 `target/debug/stock-operator inspect openapi`.
+
+## Tauri command surface
+
+Invoked via `window.__TAURI__.core.invoke`; browser fallback is minimal and
+non-mutating:
+
+```
+get_settings              -> PublicSettings (no secrets)
+save_settings             -> SaveSettingsResponse { restart_required, reasons }
+get_runtime_status        -> RuntimeStatus { server_running, token_configured/source, accessibility, restart, db_path }
+get_token_status          -> { configured, source }
+save_token / clear_token  -> TokenStatus (Keychain, env-preferred)
+test_stock_service_url    -> { ok, status, message, latency_ms }
+list_operations           -> OperationHistoryResponse (paginated, redacted)
+list_audit_events         -> AuditHistoryResponse (paginated, filtered)
+```
+
+No command returns or logs bearer/confirmation tokens; only booleans/status.
 
 ## MCP surface
 
@@ -110,7 +144,8 @@ HTTP `GET /api/v1/operator/operations` is the primary UI path).
 - Amount-limit and exact-order verification remain enforced in the broker page
   layer (`submit_order`, `cancel_order`).
 - All UI/OCR operations are serialized via a single async mutex across CLI,
-  MCP, and REST.
+  MCP, and REST, and the Tauri background server shares the same `OperatorService`
+  instance.
 
 ## Versioning
 
@@ -120,7 +155,8 @@ HTTP `GET /api/v1/operator/operations` is the primary UI path).
   Additive, backward-compatible additions (e.g., history/status endpoints) are
   allowed in later phases; breaking removals require a major version bump.
 - Dependency pins are recorded in `Cargo.toml` from the parent workspace
-  versions (axum 0.8.9, rmcp =3.1.1, tokio 1.53.1, etc.).
+  versions (axum 0.8.9, rmcp =3.1.1, tokio 1.53.1, etc.) plus Tauri v2,
+  `tauri-plugin-single-instance`, `keyring`, and `reqwest` for the desktop phase.
 
 ## Audit and redaction
 
@@ -136,27 +172,37 @@ HTTP `GET /api/v1/operator/operations` is the primary UI path).
   and `GET /api/v1/operator/operations/{id}`) hide confirmation tokens except
   for an immediately-prepared `confirmation_opened` operation within the same
   process; after restart or terminal states the token is absent.
+- Tauri history/audit commands and the `ui/` history tables show only redacted
+  summaries and never expose bearer or confirmation tokens.
+
+## Topology
+
+Default binding remains loopback (`127.0.0.1:5190`). The Linux main service talks
+to the Mac operator over this loopback when co-located, or via an explicit
+private-network configuration otherwise. Cross-machine use requires a private
+overlay (e.g., Tailscale/WireGuard), reverse proxy, or TLS-terminating tunnel
+that preserves the bearer token and does not expose plaintext HTTP to the public
+internet. Plaintext cross-machine HTTP is not safe and is not supported in this
+phase; authenticated encrypted transport is phase 4. The desktop shows bind/MCP
+settings and marks network changes as restart-required without pretending hot
+reload works.
 
 ## Explicitly out of scope for this phase
 
-The following remain for later phases and must not be claimed as present:
+- **Cross-machine authenticated encrypted transport**: loopback-only remains
+  enforced; private overlay/TLS proxy is documented above and implemented in
+  phase 4.
+- **Generated build output / lockfiles**: `target/`, `.app` bundles, and
+  `Cargo.lock` are not committed.
 
-- **Tauri shell/UI** beyond the existing `.app` packaging via `package.nu`.
-  Double-clickable bundling still uses `package.nu`; Tauri frontend,
-  settings UI, and full Keychain secret storage are later phases (current
-  bearer token remains env-only, confirmation tokens in-memory only).
-- **Cross-machine transport**: loopback-only remains enforced; authenticated
-  encrypted transport / overlay / reverse-proxy is a documented future
-  requirement, not yet implemented.
-- **Full secret manager**: SQLite intentionally excludes secrets; migration to
-  macOS Keychain for bearer tokens is planned but not yet implemented.
-
-SQLite persistence, durable live-operation state, audit history, and
-history/status HTTP endpoints (phase 2) are now implemented; Tauri packaging and
-cross-machine hardening remain next.
+SQLite persistence, durable live-operation state, audit history, Tauri desktop
+shell, double-click bundling with `ui/`, and Keychain token storage are now
+implemented; cross-machine hardening and CI release artifacts remain next.
 
 ## References
 
 - Parent source: `/Volumes/Enterprise/codes/research/stock-goes-stonk/apps/stock-operator`
 - Bundle identifier: `com.cloudiful.stock-operator` / `com.cloudiful.stock-operator.window-ocr`
 - Default process: `中信证券网上交易` (`com.citics.mac.tdx`)
+- SQLite: `~/Library/Application Support/Stock Operator/operator.sqlite3`
+- Keychain service: `com.cloudiful.stock-operator` / `operator-bearer-token`

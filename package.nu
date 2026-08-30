@@ -15,7 +15,18 @@ def main [
   let macos = ($contents | path join "MacOS")
   let helpers = ($contents | path join "Helpers")
 
-  ^cargo build --release -p stock-operator --manifest-path $manifest
+  # Verify Tauri + UI assets are present for desktop bundling
+  if not (($root | path join "tauri.conf.json") | path exists) { error make {msg: "missing tauri.conf.json"} }
+  if not (($root | path join "ui/index.html") | path exists) { error make {msg: "missing ui/index.html"} }
+
+  # Build release binary (Tauri codegen runs via build.rs). Keep deployment target 26.0 aligned with Info.plist.
+  with-env {MACOSX_DEPLOYMENT_TARGET: "26.0"} {
+    ^cargo build --release -p stock-operator --manifest-path $manifest
+  }
+
+  # Prefer an already-produced Tauri bundle (when `cargo tauri build` was used), otherwise collect manual artifacts.
+  let tauri_bundle = ($target_dir | path join "release/bundle/macos/Stock Operator.app")
+  let use_tauri_bundle = ($tauri_bundle | path exists)
 
   let helper = (
     glob ($target_dir | path join "release/build/stock-operator-*/out/window-ocr")
@@ -26,6 +37,23 @@ def main [
   let binary = ($target_dir | path join "release/stock-operator")
   if not ($binary | path exists) { error make {msg: $"missing release binary: ($binary)"} }
   if ($helper | is-empty) { error make {msg: "missing release OCR helper; inspect the stock-operator build warnings"} }
+
+  if $use_tauri_bundle {
+    print $"found Tauri bundle at ($tauri_bundle), copying helper into it"
+    if ($app | path exists) { rm --recursive --force $app }
+    cp --recursive $tauri_bundle $app
+    # Ensure Helpers exists and contains window-ocr
+    mkdir $helpers
+    cp $helper ($helpers | path join "window-ocr")
+    ^chmod 755 ($helpers | path join "window-ocr")
+    ^codesign --force --sign $identity --identifier "com.cloudiful.stock-operator.window-ocr" ($helpers | path join "window-ocr")
+    ^codesign --force --sign $identity --identifier "com.cloudiful.stock-operator" ($macos | path join "stock-operator")
+    ^codesign --force --sign $identity $app
+    ^codesign --verify --deep --strict --verbose=2 $app
+    ^plutil -lint ($contents | path join "Info.plist")
+    print $app
+    return
+  }
 
   if ($app | path exists) { rm --recursive --force $app }
   mkdir $macos $helpers

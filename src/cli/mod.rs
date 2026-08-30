@@ -13,6 +13,8 @@ pub(crate) struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
+    /// Start the authenticated HTTP/MCP operator server headlessly (explicit server mode).
+    Serve,
     /// Read-only diagnostics and current UI state.
     #[command(subcommand)]
     Inspect(InspectCommand),

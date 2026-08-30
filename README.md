@@ -14,15 +14,28 @@ submission and cancellation testing.
 ## Run
 
 Grant Accessibility permission to the process in **System Settings -> Privacy
-& Security -> Accessibility**, then run:
+& Security -> Accessibility**, then run the desktop app:
 
 ```sh
-STOCK_OPERATOR_AUTH_TOKEN='replace-with-a-local-token' cargo run
+nu package.nu
+open "target/stock-operator/Stock Operator.app"
 ```
 
-`STOCK_OPERATOR_AUTH_TOKEN` is required for the long-running MCP server. If it
-is missing, the process exits with an explicit configuration error. The token
-is not needed by the one-shot read-only commands below.
+Double-clicking `Stock Operator.app` with no CLI arguments opens the desktop
+window. Existing CLI commands remain available; headless/server mode now
+requires an explicit subcommand:
+
+```sh
+STOCK_OPERATOR_AUTH_TOKEN='replace-with-a-local-token' cargo run -- serve
+# or
+STOCK_OPERATOR_AUTH_TOKEN='...' target/debug/stock-operator serve
+```
+
+`STOCK_OPERATOR_AUTH_TOKEN` is required for the HTTP/MCP server. When launched
+as a desktop app with no token configured, the window remains usable for
+first-run setup (Connection tab shows “server not running”); saving a token
+via Keychain starts the background server without an unsafe fallback.
+Environment tokens take precedence over Keychain.
 
 The OCR probe also requires **System Settings -> Privacy & Security -> Screen
 Recording** permission for the `stock-operator` process and its macOS OCR
@@ -49,7 +62,33 @@ http://127.0.0.1:5190/mcp
 
 Register that endpoint in the stock-goes-stonk AI MCP settings with the same
 static Bearer token. The server refuses non-loopback bind addresses by default;
-see `docs/protocol.md` for cross-machine guidance (future phase).
+see `docs/protocol.md` for cross-machine guidance (phase 4).
+
+## Desktop
+
+The Tauri v2 desktop shell (`tauri.conf.json`, `ui/`) launches by double-click
+and starts the authenticated HTTP/MCP server in the background when a token is
+configured. Single-instance is enforced so re-opening the app focuses the
+existing window instead of competing with the running server.
+
+- **Connection** tab: stock main-service URL, operator bind/MCP/broker bundle and
+  process settings, traversal limits, bearer-token status and secure entry
+  (Keychain), save/test controls, server and Accessibility status, restart-required
+  notice, instance identifier.
+- **History** tab: paginated operation history (kind/state/time/payload summary),
+  audit event view with operation filter, refresh and empty/loading/error states.
+
+Tauri commands (`window.__TAURI__.core.invoke`) are narrow and typed:
+`get_settings`, `save_settings`, `get_runtime_status`, `get_token_status`,
+`save_token`, `clear_token`, `test_stock_service_url`, `list_operations`,
+`list_audit_events`. Secrets are never returned or stored in SQLite.
+
+Ordinary settings are persisted in SQLite and reloaded on restart when env
+overrides are absent. URL, socket address, paths, and numeric bounds are
+validated; loopback-only binding is preserved. Settings that affect the running
+HTTP server or Accessibility inspector are reported as restart-required.
+
+Browser preview without Tauri shows a read-only banner and disables mutations.
 
 ## Probe
 
@@ -112,16 +151,19 @@ broker-dialog, amount-limit, and exact-order verification checks.
 
 ## Package
 
-Build a stable local app bundle with ad-hoc signing:
+Build a stable local app bundle with ad-hoc signing (Tauri shell + OCR helper):
 
 ```sh
 nu package.nu
 ```
 
 The bundle is written to `target/stock-operator/Stock Operator.app` with bundle
-identifier `com.cloudiful.stock-operator`. Pass `--identity` to use an installed
-Apple code-signing identity. Grant Accessibility and Screen Recording permission
-to this bundle before long-running use.
+identifier `com.cloudiful.stock-operator` and `LSMinimumSystemVersion 26.0`.
+The script builds the release Tauri binary, embeds `ui/`, and adds
+`Contents/Helpers/window-ocr`. If a `target/release/bundle/macos` Tauri bundle
+already exists, it is reused and the helper is injected. Pass `--identity` to
+use an installed Apple code-signing identity. Grant Accessibility and Screen
+Recording permission to this bundle before long-running use.
 
 ## Storage
 
@@ -129,15 +171,21 @@ SQLite stores ordinary operator settings and durable operation history at
 `~/Library/Application Support/Stock Operator/operator.sqlite3` (configurable
 via `STOCK_OPERATOR_DB_PATH`). Parent directories are created and
 `migrations/0001_initial.sql` is applied at startup; a clear error is reported
-if SQLite cannot initialize. Ordinary settings persisted for the upcoming Tauri
-UI are: stock main-service URL (`STOCK_OPERATOR_MAIN_SERVICE_URL`),
+if SQLite cannot initialize.
+
+Ordinary settings persisted through the desktop UI and SQLite APIs are:
+stock main-service URL (`STOCK_OPERATOR_MAIN_SERVICE_URL`),
 `STOCK_OPERATOR_BIND_ADDR`, `STOCK_OPERATOR_MCP_PATH`,
 `STOCK_OPERATOR_TARGET_BUNDLE_ID`/`STOCK_OPERATOR_TARGET_PROCESS_NAME`,
 traversal limits (`STOCK_OPERATOR_MAX_DEPTH`/`STOCK_OPERATOR_MAX_NODES`), and a
 generated `operator_instance_id` (`STOCK_OPERATOR_INSTANCE_ID` may configure it).
-Bearer tokens (`STOCK_OPERATOR_AUTH_TOKEN`) and one-time confirmation tokens are
-never written to SQLite; they remain environment-only / in-memory and will move
-to macOS Keychain in a later phase.
+On restart, persisted settings are used when env overrides are absent.
+
+Bearer tokens (`STOCK_OPERATOR_AUTH_TOKEN`) are stored in macOS Keychain
+(service `com.cloudiful.stock-operator`, account `operator-bearer-token`), never
+in SQLite. The desktop shows only a configured boolean/status; env tokens take
+precedence and Keychain failures return a clear non-secret error without
+falling back to plaintext.
 
 Live operations and audit events are persisted with redacted summaries
 (security code / side / price / quantity only, fingerprint retained). No
@@ -195,7 +243,7 @@ unknown confirmation outcome is not retryable. Use the abort endpoint to close
 a still-open confirmation dialog. An unknown or abandoned live operation blocks
 new live operations until it is explicitly resolved.
 
-The history endpoints power the upcoming Tauri UI; they expose the SQLite-backed
+The history endpoints power the Tauri UI; they expose the SQLite-backed
 operation state after restart. The MCP read-only tool `list_recent_operations`
 provides the same redacted history for AI use and does not expose tokens.
 
@@ -206,13 +254,14 @@ live-operation safety gates.
 
 ## Project status
 
-This is phase 2 (`sqlite-audit`) of the standalone Tauri extraction.
-SQLite persistence, durable live-operation state, audit history, and
-history/status HTTP endpoints (plus a read-only `list_recent_operations` MCP
-tool) are implemented. The Tauri desktop shell and double-clickable bundling
-remain for a later phase. The repository retains loopback-only binding and
-macOS Accessibility/OCR behavior, now with durable recovery and `Unknown`/`Expired`
-semantics across restart.
+This is phase 3 (`tauri-desktop`) of the standalone Tauri extraction.
+SQLite persistence, durable live-operation state, and audit history are complete;
+the Tauri v2 desktop shell, double-clickable bundling with `ui/`, Keychain token
+storage, and settings/status/history commands are now implemented. Loopback-only
+binding is preserved; authenticated encrypted transport for Linux-to-Mac remains
+phase 4. The repository retains macOS Accessibility/OCR behavior with durable
+recovery and `Unknown`/`Expired` semantics across restart.
 
-Bearer and confirmation tokens are not persisted; `STOCK_OPERATOR_AUTH_TOKEN`
-remains environment-only (Keychain boundary planned).
+Linux main service to Mac operator topology is loopback by default; cross-machine
+use requires an explicit private overlay or TLS proxy with the same bearer
+token—plaintext HTTP over the public network is not supported.

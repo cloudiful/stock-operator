@@ -587,7 +587,15 @@ pub async fn serve(
     Ok(())
 }
 
-fn build_router(
+pub async fn serve_with_config(
+    config: OperatorConfig,
+    inspector: AccessibilityInspector,
+    operator_service: OperatorService,
+) -> Result<()> {
+    serve(config, inspector, operator_service).await
+}
+
+pub(crate) fn build_router(
     config: &OperatorConfig,
     inspector: AccessibilityInspector,
     operator_service: OperatorService,

@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:5190";
 const DEFAULT_MCP_PATH: &str = "/mcp";
 const DEFAULT_TARGET_BUNDLE_ID: &str = "com.citics.mac.tdx";
@@ -76,6 +77,200 @@ impl OperatorConfig {
         })
     }
 
+    /// Load effective config preferring explicit env vars, then persisted SQLite settings,
+    /// then built-in defaults. `auth_token` remains env-only here; keychain resolution
+    /// is handled by the desktop layer and merged afterwards.
+    pub fn from_env_with_storage(storage: &crate::storage::Storage) -> Result<Self> {
+        let db_path = resolve_db_path();
+
+        let bind_addr = if let Ok(raw) = env::var("STOCK_OPERATOR_BIND_ADDR") {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                let addr: SocketAddr = trimmed
+                    .parse()
+                    .context("STOCK_OPERATOR_BIND_ADDR must be a socket address")?;
+                if !addr.ip().is_loopback() {
+                    bail!("stock-operator only binds to loopback; use a 127.0.0.1 or ::1 address");
+                }
+                addr
+            } else {
+                Self::bind_addr_from_storage(storage)?
+            }
+        } else {
+            Self::bind_addr_from_storage(storage)?
+        };
+
+        let mcp_path = if let Ok(raw) = env::var("STOCK_OPERATOR_MCP_PATH") {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                normalize_path(trimmed)
+            } else {
+                Self::mcp_path_from_storage(storage)
+            }
+        } else {
+            Self::mcp_path_from_storage(storage)
+        };
+
+        let target_bundle_id = if let Ok(raw) = env::var("STOCK_OPERATOR_TARGET_BUNDLE_ID") {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                trimmed.to_string()
+            } else {
+                Self::bundle_id_from_storage(storage)
+            }
+        } else {
+            Self::bundle_id_from_storage(storage)
+        };
+
+        let target_process_name = if let Ok(raw) = env::var("STOCK_OPERATOR_TARGET_PROCESS_NAME") {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                trimmed.to_string()
+            } else {
+                Self::process_name_from_storage(storage)
+            }
+        } else {
+            Self::process_name_from_storage(storage)
+        };
+
+        let max_depth = if let Ok(raw) = env::var("STOCK_OPERATOR_MAX_DEPTH") {
+            if let Ok(v) = raw.trim().parse::<usize>() {
+                v.clamp(1, 12)
+            } else {
+                Self::max_depth_from_storage(storage)
+            }
+        } else {
+            Self::max_depth_from_storage(storage)
+        };
+
+        let max_nodes = if let Ok(raw) = env::var("STOCK_OPERATOR_MAX_NODES") {
+            if let Ok(v) = raw.trim().parse::<usize>() {
+                v.clamp(1, 2_000)
+            } else {
+                Self::max_nodes_from_storage(storage)
+            }
+        } else {
+            Self::max_nodes_from_storage(storage)
+        };
+
+        let stock_service_url = env::var("STOCK_OPERATOR_MAIN_SERVICE_URL")
+            .or_else(|_| env::var("STOCK_OPERATOR_STOCK_SERVICE_URL"))
+            .or_else(|_| env::var("STOCK_MAIN_SERVICE_URL"))
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .or_else(|| {
+                storage
+                    .get_setting("stock_main_service_url")
+                    .ok()
+                    .flatten()
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+            });
+
+        let auth_token = env::var("STOCK_OPERATOR_AUTH_TOKEN")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+        let instance_id = env::var("STOCK_OPERATOR_INSTANCE_ID")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .or_else(|| {
+                storage
+                    .get_setting("operator_instance_id")
+                    .ok()
+                    .flatten()
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+            });
+
+        Ok(Self {
+            bind_addr,
+            mcp_path,
+            auth_token,
+            target_bundle_id,
+            target_process_name,
+            max_depth,
+            max_nodes,
+            db_path,
+            stock_service_url,
+            instance_id,
+        })
+    }
+
+    fn bind_addr_from_storage(storage: &crate::storage::Storage) -> Result<SocketAddr> {
+        if let Some(raw) = storage
+            .get_setting("bind_addr")
+            .ok()
+            .flatten()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+        {
+            let addr: SocketAddr = raw
+                .parse()
+                .context("persisted bind_addr must be a socket address")?;
+            if !addr.ip().is_loopback() {
+                bail!("persisted bind_addr must be loopback");
+            }
+            return Ok(addr);
+        }
+        Ok(DEFAULT_BIND_ADDR.parse().unwrap())
+    }
+
+    fn mcp_path_from_storage(storage: &crate::storage::Storage) -> String {
+        if let Some(raw) = storage
+            .get_setting("mcp_path")
+            .ok()
+            .flatten()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+        {
+            normalize_path(&raw)
+        } else {
+            DEFAULT_MCP_PATH.to_string()
+        }
+    }
+
+    fn bundle_id_from_storage(storage: &crate::storage::Storage) -> String {
+        storage
+            .get_setting("target_bundle_id")
+            .ok()
+            .flatten()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| DEFAULT_TARGET_BUNDLE_ID.to_string())
+    }
+
+    fn process_name_from_storage(storage: &crate::storage::Storage) -> String {
+        storage
+            .get_setting("target_process_name")
+            .ok()
+            .flatten()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| DEFAULT_TARGET_PROCESS_NAME.to_string())
+    }
+
+    fn max_depth_from_storage(storage: &crate::storage::Storage) -> usize {
+        storage
+            .get_setting("max_depth")
+            .ok()
+            .flatten()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(DEFAULT_MAX_DEPTH)
+            .clamp(1, 12)
+    }
+
+    fn max_nodes_from_storage(storage: &crate::storage::Storage) -> usize {
+        storage
+            .get_setting("max_nodes")
+            .ok()
+            .flatten()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(DEFAULT_MAX_NODES)
+            .clamp(1, 2_000)
+    }
+
     pub fn endpoint(&self) -> String {
         format!("http://{}{}", self.bind_addr, self.mcp_path)
     }
@@ -118,7 +313,7 @@ pub fn default_db_path() -> PathBuf {
     PathBuf::from("operator.sqlite3")
 }
 
-fn normalize_path(value: &str) -> String {
+pub(crate) fn normalize_path(value: &str) -> String {
     let value = value.trim();
     if value.is_empty() || value == "/" {
         return "/".to_string();
@@ -150,7 +345,6 @@ mod tests {
         let path = default_db_path();
         let s = path.to_string_lossy();
         assert!(s.contains("operator.sqlite3"));
-        // On CI container HOME may be /root or /Users/...
         assert!(
             s.contains("Stock Operator") || s == "operator.sqlite3" || s.contains("stock-operator")
         );
@@ -174,7 +368,6 @@ mod tests {
 
     #[test]
     fn auth_token_not_in_default_settings() {
-        // Ensure config does not set token-related env as db path
         let cfg = super::OperatorConfig::from_env().unwrap();
         let display = cfg.db_path_display();
         assert!(!display.contains("token"));

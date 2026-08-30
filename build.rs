@@ -1,6 +1,24 @@
 use std::{env, path::PathBuf, process::Command};
 
 fn main() {
+    // Tauri codegen: embed tauri.conf.json and generate context for `tauri::generate_context!`.
+    // Keep this before the OCR helper so both env vars are available.
+    // On non-macOS, or when tauri.conf.json is absent (e.g. `cargo check` on CI without frontend),
+    // treat Tauri as best-effort and do not hard-fail the build.
+    println!("cargo:rerun-if-changed=tauri.conf.json");
+    println!("cargo:rerun-if-changed=capabilities/default.json");
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos")
+        && PathBuf::from("tauri.conf.json").exists()
+    {
+        // `try_build` returns Result instead of panicking like `build()`
+        match tauri_build::try_build(tauri_build::Attributes::default()) {
+            Ok(_) => {}
+            Err(err) => {
+                println!("cargo:warning=tauri build skipped: {err:#}");
+            }
+        }
+    }
+
     println!("cargo:rerun-if-changed=macos/window_ocr.swift");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
