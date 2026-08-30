@@ -1,0 +1,80 @@
+use std::{env, path::PathBuf, process::Command};
+
+fn main() {
+    println!("cargo:rerun-if-changed=macos/window_ocr.swift");
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+        return;
+    }
+
+    let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest dir"));
+    let source = manifest_dir.join("macos/window_ocr.swift");
+    let output = PathBuf::from(env::var_os("OUT_DIR").expect("out dir")).join("window-ocr");
+    let swiftc = Command::new("xcrun")
+        .args(["--find", "swiftc"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
+
+    let Some(swiftc) = swiftc else {
+        println!("cargo:warning=stock-operator OCR helper unavailable: xcrun swiftc not found");
+        return;
+    };
+    let sdk = Command::new("xcrun")
+        .args(["--sdk", "macosx", "--show-sdk-path"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
+    let Some(sdk) = sdk else {
+        println!("cargo:warning=stock-operator OCR helper unavailable: macOS SDK not found");
+        return;
+    };
+    let swift_arch = match env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+        Ok("aarch64") => "arm64",
+        Ok("x86_64") => "x86_64",
+        _ => {
+            println!(
+                "cargo:warning=stock-operator OCR helper unavailable: unsupported target arch"
+            );
+            return;
+        }
+    };
+    let deployment_target =
+        env::var("MACOSX_DEPLOYMENT_TARGET").unwrap_or_else(|_| "26.0".to_string());
+    let target = format!("{swift_arch}-apple-macosx{deployment_target}");
+    let compile = Command::new(swiftc)
+        .args([
+            "-parse-as-library",
+            "-O",
+            "-sdk",
+            &sdk,
+            "-target",
+            &target,
+            "-framework",
+            "AppKit",
+            "-framework",
+            "ScreenCaptureKit",
+            "-framework",
+            "Vision",
+            "-o",
+        ])
+        .arg(&output)
+        .arg(&source)
+        .output();
+    match compile {
+        Ok(helper_output) if helper_output.status.success() => {
+            println!(
+                "cargo:rustc-env=STOCK_OPERATOR_OCR_HELPER={}",
+                output.display()
+            );
+        }
+        Ok(helper_output) => println!(
+            "cargo:warning=stock-operator OCR helper could not be compiled: {}",
+            String::from_utf8_lossy(&helper_output.stderr).trim()
+        ),
+        Err(error) => {
+            println!("cargo:warning=stock-operator OCR helper could not be executed: {error}")
+        }
+    }
+}
