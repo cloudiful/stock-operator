@@ -63,11 +63,35 @@ intentionally running `cargo run`:
   require re-granting, so prefer the stable signed `.app` before long-running
   use
 
-`cargo run` with no arguments now loads the checked-in local UI from `ui/`
-(`ui/index.html`, `ui/main.js`, `ui/styles.css`) via `tauri.conf.json`
-`frontendDist: "ui"`; no `http://localhost:5173` dev server or frontend build
-step is required. Both `cargo run` and the packaged `.app` use the same local
-assets — `tauri.conf.json` no longer sets `build.devUrl`.
+`cargo run` with no arguments loads the local Vue UI from `ui/dist`
+via `tauri.conf.json` `frontendDist: "ui/dist"`; no `http://localhost:5173` dev
+server is used in the normal static launch path. The UI is Vue 3 + Vite +
+TypeScript + `vue-i18n` (Composition API, no Nuxt/SSR). Build it with Bun:
+
+```sh
+cd ui
+bun install   # do not commit bun.lock
+bun run typecheck
+bun run test
+bun run build # -> ui/dist/index.html + assets (base './', relative for Tauri)
+```
+
+`tauri.conf.json` `build.beforeBuildCommand` is `bun --cwd ui run build`
+so `cargo tauri build` also builds the frontend. `nu package.nu` builds the
+frontend before Rust packaging and verifies `ui/dist/index.html` exists; both
+`cargo run` and the packaged `.app` use the same local assets —
+`tauri.conf.json` does not set `build.devUrl`. `ui/dist` and
+`ui/node_modules` are ignored.
+
+Language: `zh-CN` / `en` — initial locale follows `navigator.language`
+(`zh` → `zh-CN`, otherwise `en`) with a visible selector; switching updates
+the UI immediately without restart and persists in `localStorage` under
+`stock-operator.locale` (non-secret). Theme: `system` / `light` / `dark`
+(default `system`) with a visible selector; system mode reacts to
+`prefers-color-scheme` changes, persists in `localStorage` under
+`stock-operator.theme`, and is applied before first paint via the
+CSP-compatible external asset `ui/dist/theme-bootstrap.js` (no inline script;
+current CSP `script-src 'self'` unchanged).
 
 The MCP endpoint defaults to:
 
@@ -222,32 +246,48 @@ locally.
 
 ## Desktop
 
-The Tauri v2 desktop shell (`tauri.conf.json`, `ui/`) launches by double-click
-and starts the authenticated HTTP/MCP server in the background when a token is
-configured. Single-instance is enforced so re-opening the app focuses the
-existing window instead of competing with the running server.
+The Tauri v2 desktop shell (`tauri.conf.json`, `ui/dist`) is Vue 3 + Vite +
+TypeScript. `ui/src/App.vue` composes `ConnectionPanel` and `HistoryPanel`
+with composables for Tauri invoke, `vue-i18n`, and theme; non-generated files
+stay cohesive and below ~300 lines. The app launches by double-click and starts
+the authenticated HTTP/MCP server in the background when a token is configured.
+Single-instance is enforced so re-opening the app focuses the existing window
+instead of competing with the running server.
 
 - **Connection** tab: stock main-service URL, operator network mode/bind/MCP/
   broker bundle and process settings, traversal limits, bearer-token status and
   secure entry (Keychain), save/test controls, server and Accessibility status,
   restart-required notice, instance identifier. Network mode changes require
-  explicit safety acknowledgement.
+  explicit safety acknowledgement. Language and theme selectors are in the
+  topbar.
 - **History** tab: paginated operation history (kind/state/time/payload summary),
   audit event view with operation filter, refresh and empty/loading/error states.
   Stale `unknown`/`expired` rows show a "Resolve stale" button that requires explicit confirmation that the broker dialog is closed before writing the supervised `stale_resolved` audit.
 
-Tauri commands (`window.__TAURI__.core.invoke`) are narrow and typed:
-`get_settings`, `save_settings`, `get_runtime_status`, `get_token_status`,
-`save_token`, `clear_token`, `test_stock_service_url`, `list_operations`,
-`list_audit_events`, `resolve_stale_operation` (desktop-only recovery for `unknown`/`expired` → `aborted` with `stale_resolved` audit and token clear; requires explicit dialog-closed acknowledgement). Secrets are never returned or stored in SQLite.
+All visible labels, status values, buttons, empty/error messages, and the stale
+confirmation are translated in `zh-CN` and `en`; switching locale updates the
+UI immediately. Theme `system`/`light`/`dark` covers page, topbar, cards,
+controls, banners, tables, warnings, borders, and status colors; `system`
+reacts to `prefers-color-scheme` and the choice persists in
+`localStorage` (`stock-operator.theme` / `stock-operator.locale`, non-secret)
+and is applied before first paint via `ui/dist/theme-bootstrap.js`.
+
+Tauri commands (`window.__TAURI__.core.invoke`) are narrow and typed and
+unchanged: `get_settings`, `save_settings`, `get_runtime_status`,
+`get_token_status`, `save_token`, `clear_token`, `test_stock_service_url`,
+`list_operations` (`limit`/`offset`/`kind`/`stateFilter`), `list_audit_events`
+(`limit`/`offset`/`operationId`), `resolve_stale_operation`
+(`operation_id` + compat `operationId` → `aborted` with `stale_resolved` audit
+and token clear; requires explicit dialog-closed acknowledgement). Browser
+fallback stays read-only: mutations disabled, tables safe via text interpolation
+(`{{ }}`), never `v-html`. Secrets are never returned or stored in SQLite.
 
 Ordinary settings are persisted in SQLite and reloaded on restart when env
-overrides are absent. URL, socket address, paths, network mode, and numeric
-bounds are validated; private-overlay mode requires acknowledgement. Settings
-that affect the running HTTP server or Accessibility inspector are reported as
-restart-required.
-
-Browser preview without Tauri shows a read-only banner and disables mutations.
+overrides are absent. Presentation preferences (`locale`, `theme`) are the only
+`localStorage` keys and never touch secrets. URL, socket address, paths, network
+mode, and numeric bounds are validated; private-overlay mode requires
+acknowledgement. Settings that affect the running HTTP server or Accessibility
+inspector are reported as restart-required.
 
 ## Probe
 
@@ -310,9 +350,12 @@ broker-dialog, amount-limit, and exact-order verification checks.
 
 ## Package
 
-Build a stable local app bundle with ad-hoc signing (Tauri shell + OCR helper):
+Build a stable local app bundle with ad-hoc signing (Tauri shell + OCR helper).
+A fresh checkout must build the frontend first (Bun):
 
 ```sh
+cd ui && bun install && bun run build   # -> ui/dist/index.html + theme-bootstrap.js + assets
+# or let package.nu do it:
 nu package.nu
 # with explicit target (for CI cross builds)
 nu package.nu --target aarch64-apple-darwin
@@ -322,14 +365,16 @@ nu package.nu --target x86_64-apple-darwin
 The bundle is written to `target/stock-operator/Stock Operator.app` (or
 `target/<target>/stock-operator-…/Stock Operator.app` when `--target` is used)
 with bundle identifier `com.cloudiful.stock-operator` and
-`LSMinimumSystemVersion 26.0`. The script builds the release Tauri binary,
-embeds `ui/`, and adds `Contents/Helpers/window-ocr`. If a
-`target/release/bundle/macos` Tauri bundle already exists, it is reused and the
-helper is injected. Pass `--identity` to use an installed Apple code-signing
-identity. Grant Accessibility and Screen Recording permission to this bundle
-before long-running use. Release archives are `.app.zip` created with
-`ditto -c -k --keepParent` so macOS preserves bundle metadata; a bare binary is
-not sufficient because `window-ocr` and TCC permissions depend on the bundle.
+`LSMinimumSystemVersion 26.0`. The script builds the Vue frontend with Bun,
+then the release Tauri binary, embeds `ui/dist`, and adds
+`Contents/Helpers/window-ocr` (Vite `base: './'` gives relative assets for the
+custom protocol). If a `target/release/bundle/macos` Tauri bundle already
+exists, it is reused and the helper is injected. Pass `--identity` to use an
+installed Apple code-signing identity. Grant Accessibility and Screen Recording
+permission to this bundle before long-running use. Release archives are
+`.app.zip` created with `ditto -c -k --keepParent` so macOS preserves bundle
+metadata; a bare binary is not sufficient because `window-ocr` and TCC
+permissions depend on the bundle.
 
 ## Storage
 
@@ -434,12 +479,13 @@ probe.
 
 ## CI and Release
 
-- **CI** — GitHub `.github/workflows/ci.yml` runs on `macos-15` (PRs, pushes to `main`, tags `v*`, manual dispatch) and exercises the full macOS crate: `cargo fmt --all -- --check`, `SQLX_OFFLINE=true cargo check --all-targets` + `cargo test --all-targets` (97+ tests), plus static validation of `tauri.conf.json` (IPC CSP `ipc:` + `http://ipc.localhost`, `CFBundleIconFile` without `LSUIElement`), `capabilities/default.json`, `ui/` assets, icons, `package.nu` (absolute-path and empty-glob guards, icon copy to `Resources`), and migrations (`0001` + `0002` `stale_resolved`). Forgejo `.forgejo/workflows/ci.yml` on Linux `aio` has no macOS toolchain and would compile only the non-macOS stub with 0 tests, so it runs **only** formatting, static asset, and docs validation with an explicit note that full Rust validation is on GitHub `macos-15`; it does not claim full Rust tests. No secrets are included in either workflow.
+- **CI** — GitHub `.github/workflows/ci.yml` runs on `macos-15` (PRs, pushes to `main`, tags `v*`, manual dispatch) and exercises the full macOS crate: installs Bun and runs `bun --cwd ui install` + `bun --cwd ui run typecheck` + `bun --cwd ui run test` + `bun --cwd ui run build` and checks `ui/dist/index.html`/`assets` (relative base), then `cargo fmt --all -- --check`, `SQLX_OFFLINE=true cargo check --all-targets` + `cargo test --all-targets` (97+ tests), plus static validation of `tauri.conf.json` (`frontendDist: "ui/dist"`, no `devUrl`, IPC CSP `ipc:` + `http://ipc.localhost`, `CFBundleIconFile` without `LSUIElement`), `capabilities/default.json`, `ui/dist` assets, icons, `package.nu` (frontend build + absolute-path and empty-glob guards, icon copy to `Resources`), and migrations (`0001` + `0002` `stale_resolved`). Forgejo `.forgejo/workflows/ci.yml` on Linux `aio` has no macOS toolchain and would compile only the non-macOS stub with 0 tests, so it runs Bun frontend checks when Bun is available and otherwise checks source metadata plus formatting/static assets/docs validation with an explicit note that full Rust validation is on GitHub `macos-15`; it does not claim full Rust tests. No secrets are included in either workflow.
 
 - **Release** on strict `v*` tags (`.github/workflows/release.yml`) builds both
   macOS targets on GitHub-hosted macOS runners with explicit triples:
   `aarch64-apple-darwin` on `macos-15` (Apple Silicon M4) and
-  `x86_64-apple-darwin` on `macos-13` (Intel). Each job runs
+  `x86_64-apple-darwin` on `macos-13` (Intel). Each job installs Bun, runs
+  `bun --cwd ui run build` (via `beforeBuildCommand` and `package.nu`), then
   `nu package.nu --target <triple> --output target/stock-operator-<triple>/Stock Operator.app`,
   verifies `Contents/MacOS/stock-operator` + `Contents/Helpers/window-ocr` +
   `Contents/Info.plist` + `codesign --verify`, then creates a clickable
@@ -459,16 +505,18 @@ Verify a release locally with `shasum -a 256 -c SHA256SUMS`.
 
 ## Project status
 
-This is phase 4 (`network-release`) of the standalone Tauri extraction.
-SQLite persistence, durable live-operation state, audit history, Tauri v2
-desktop shell with Keychain token storage and settings/history commands, and
-double-clickable bundling with `ui/` are complete. **Loopback remains default**;
-a new explicit `private-overlay` network mode permits private-network binds
-(`10/8`, `172.16/12`, `192.168/16`, `100.64/10` Tailscale CGNAT, ULA/link-local)
-with bearer auth and encrypted transport/private overlay, guarded by
-acknowledgement and rejected public/unspecified binds. The repository retains
-macOS Accessibility/OCR behavior with durable recovery and `Unknown`/`Expired`
-semantics across restart. CI and release workflows for both GitHub (macOS
-`aarch64`/`x86_64` .app archives + SHA256SUMS) and Forgejo (test-focused on
-Linux `aio`, optional macOS when runners exist) are now present, and the
-Forgejo remote metadata has been corrected to `https://forgejo.cloud1ful.com/research/stock-operator`.
+This is phase 5 (`vue-i18n-theme`) of the standalone Tauri extraction.
+Vue 3 + Vite + TypeScript + `vue-i18n` migration is complete: componentized
+`App.vue`/`ConnectionPanel`/`HistoryPanel`, `zh-CN`/`en` i18n with
+`navigator.language` default and immediate selector, `system`/`light`/`dark`
+theme with `localStorage` persistence (`stock-operator.locale` /
+`stock-operator.theme`), system `prefers-color-scheme` reactivity, and
+CSP-compatible external bootstrap (`theme-bootstrap.js`) covering page/topbar/
+cards/controls/banners/tables/warnings/borders/status colors without white
+flash. All current Connection/History capabilities and Tauri invoke shapes
+(`get_settings`, `get_runtime_status`, `save_settings`, `save_token`,
+`clear_token`, `test_stock_service_url`, `list_operations`, `list_audit_events`,
+`resolve_stale_operation` with compat `operation_id`/`operationId`, single-instance
+refresh, browser fallback read-only) remain unchanged. SQLite persistence,
+durable live-operation state, audit history, private-overlay mode, and bundling
+with `ui/dist` are retained. CI now validates the Vue frontend before Rust.

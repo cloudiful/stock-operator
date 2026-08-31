@@ -5,7 +5,9 @@ name: CI (Forgejo)
 # macOS cfg crate compiles and 97+ tests execute. Forgejo on Linux would compile only
 # the 6-line non-macOS stub with 0 tests, so it must not claim full Rust validation.
 # This workflow is therefore limited to formatting, static asset, and documentation
-# checks, with an explicit note about the macOS runner requirement.
+# checks, with an explicit note about the macOS runner requirement. It also validates
+# the Vue frontend when Bun is available; otherwise it checks source metadata without
+# claiming a build.
 # If a self-hosted macOS runner is added, extend this workflow with a macOS job using
 # labels `macos-15` / `macos-13` and restore `cargo check --all-targets` / `cargo test --all-targets`.
 
@@ -33,6 +35,52 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup Bun (if available)
+        run: |
+          set -euo pipefail
+          if command -v bun >/dev/null 2>&1; then
+            echo "bun already available: $(bun --version)"
+          else
+            echo "bun not found on Forgejo runner, trying to install via npm..."
+            if command -v npm >/dev/null 2>&1; then
+              npm install -g bun || echo "bun install via npm failed, will validate source only"
+            fi
+            command -v bun >/dev/null 2>&1 && echo "bun now available: $(bun --version)" || echo "bun still not available, source-only validation"
+          fi
+
+      - name: Frontend checks (Bun when available, else source-only)
+        run: |
+          set -euo pipefail
+          if command -v bun >/dev/null 2>&1; then
+            echo "running frontend checks with bun..."
+            bun --cwd ui install
+            bun --cwd ui run typecheck
+            bun --cwd ui run test
+            bun --cwd ui run build
+            test -f ui/dist/index.html
+            test -f ui/dist/theme-bootstrap.js
+            test -d ui/dist/assets
+            echo "frontend build validated on Forgejo"
+          else
+            echo "bun not available on this Forgejo runner — validating Vue source metadata only (no build)"
+            test -f ui/package.json
+            test -f ui/vite.config.ts
+            test -f ui/index.html
+            test -f ui/src/main.ts
+            test -f ui/src/App.vue
+            test -f ui/src/components/ConnectionPanel.vue
+            test -f ui/src/components/HistoryPanel.vue
+            test -f ui/src/i18n/index.ts
+            test -f ui/src/composables/useTheme.ts
+            test -f ui/public/theme-bootstrap.js
+            grep -q "vue-i18n" ui/package.json
+            grep -q "vue" ui/package.json
+            grep -q "base.*\./" ui/vite.config.ts
+            grep -q "frontendDist.*ui/dist" tauri.conf.json
+            if grep -q "devUrl" tauri.conf.json; then echo "devUrl must not be set"; exit 1; fi
+            echo "frontend source metadata validated (no bun, no build claim)"
+          fi
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -44,8 +92,13 @@ jobs:
           echo "validating capabilities/default.json..."
           python3 -m json.tool capabilities/default.json > /dev/null
           test -f ui/index.html
-          test -f ui/main.js
-          test -f ui/styles.css
+          # New Vue assets: dist is generated, source is required
+          if command -v bun >/dev/null 2>&1; then
+            test -f ui/dist/index.html
+          else
+            echo "bun not available, skipping ui/dist check (source-only)"
+            test -f ui/src/App.vue
+          fi
           test -f icons/icon.png
           test -f icons/icon.icns
           test -f macos/Info.plist.template
@@ -55,9 +108,10 @@ jobs:
           grep -q "com.cloudiful.stock-operator" tauri.conf.json
           grep -q "Stock Operator" tauri.conf.json
           grep -q "ipc:" tauri.conf.json || (echo "CSP must include ipc: for Tauri invoke"; exit 1)
+          grep -q "script-src 'self'" tauri.conf.json
           if grep -q "LSUIElement" macos/Info.plist.template; then echo "LSUIElement must be removed for windowed app"; exit 1; fi
           grep -q "CFBundleIconFile" macos/Info.plist.template
-          echo "Tauri static assets validated on Forgejo Linux runner (static-only)"
+          echo "Tauri static assets validated on Forgejo Linux runner (static-only, frontend handled above)"
 
       - name: Validate documentation and protocol paths
         run: |
@@ -66,6 +120,8 @@ jobs:
           test -f README.md
           grep -q "macos-15" .github/workflows/ci.yml
           grep -q "stale_resolved" migrations/0002_stale_resolve.sql
+          grep -q "stock-operator.locale" README.md
+          grep -q "stock-operator.theme" README.md
           echo "docs validated"
 
       - name: Check git diff does not contain whitespace errors
@@ -73,7 +129,7 @@ jobs:
 
       - name: Note on macOS Rust validation
         run: |
-          echo "Forgejo CI on Linux aio is static-only: formatting, assets, docs."
+          echo "Forgejo CI on Linux aio is static-only: formatting, assets, docs, and Vue frontend (when bun available)."
           echo "Full Rust crate (macOS cfg) compiles and 97+ tests run on GitHub Actions macos-15."
           echo "Linux cargo check/test would compile only the non-macOS stub with 0 tests and is intentionally not run here."
           echo "To enable full Rust validation on Forgejo, provision a self-hosted macOS runner with Swift/Xcode and add a job with runs-on: macos-15 (arm64) and macos-13 (x86_64), then invoke 'cargo check/test --all-targets'."

@@ -37,6 +37,18 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup Bun (if available)
+        run: |
+          set -euo pipefail
+          if command -v bun >/dev/null 2>&1; then
+            echo "bun already available: $(bun --version)"
+          else
+            if command -v npm >/dev/null 2>&1; then
+              npm install -g bun || echo "bun install failed, source-only"
+            fi
+            command -v bun >/dev/null 2>&1 && echo "bun now: $(bun --version)" || echo "bun not available, source-only"
+          fi
+
       - name: Cargo fmt check
         run: cargo fmt --all -- --check
 
@@ -52,11 +64,27 @@ jobs:
           echo "tag=${{ github.ref_name || 'manual' }}"
           python3 -m json.tool tauri.conf.json > /dev/null
           test -f ui/index.html
-          test -f ui/main.js
+          test -f ui/package.json
+          test -f ui/src/App.vue
+          test -f ui/src/i18n/index.ts
+          test -f ui/public/theme-bootstrap.js
+          if command -v bun >/dev/null 2>&1; then
+            bun --cwd ui install
+            bun --cwd ui run build
+            test -f ui/dist/index.html
+            test -f ui/dist/theme-bootstrap.js
+            echo "frontend built on Forgejo (bun available)"
+          else
+            echo "bun not available, checking source metadata only"
+            test -f ui/vite.config.ts
+            grep -q "vue-i18n" ui/package.json
+          fi
           test -f macos/window_ocr.swift
           test -f macos/Info.plist.template
           test -f package.nu
           grep -q "com.cloudiful.stock-operator" tauri.conf.json
+          grep -q "frontendDist.*ui/dist" tauri.conf.json
+          if grep -q "devUrl" tauri.conf.json; then echo "devUrl must not be set"; exit 1; fi
           # Ensure release workflow files exist
           test -f .github/workflows/release.yml
           grep -q "aarch64-apple-darwin" .github/workflows/release.yml
@@ -92,6 +120,8 @@ jobs:
   #     - uses: actions/checkout@v4
   #     - uses: dtolnay/rust-toolchain@stable
   #       with: { targets: ${{ matrix.target }} }
+  #     - uses: oven-sh/setup-bun@v2
+  #     - run: bun --cwd ui install && bun --cwd ui run build
   #     - run: brew install nushell
   #     - run: nu package.nu --target ${{ matrix.target }}
   #     - run: ditto -c -k --keepParent "target/stock-operator-${{ matrix.target }}/Stock Operator.app" "stock-operator-${{ github.ref_name }}-${{ matrix.target }}.app.zip"

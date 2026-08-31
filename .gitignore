@@ -12,3 +12,8 @@ target/stock-operator/
 /gen/
 capabilities/gen/
 ui/dist/
+ui/node_modules/
+ui/bun.lock
+ui/bun.lockb
+*.tsbuildinfo
+ui/*.tsbuildinfo

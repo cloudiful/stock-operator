@@ -5,8 +5,8 @@
   "identifier": "com.cloudiful.stock-operator",
   "build": {
     "beforeDevCommand": "",
-    "beforeBuildCommand": "",
-    "frontendDist": "ui"
+    "beforeBuildCommand": "bun run --cwd ui build",
+    "frontendDist": "ui/dist"
   },
   "app": {
     "withGlobalTauri": true,

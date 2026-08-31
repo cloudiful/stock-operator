@@ -1,0 +1,27 @@
+{
+  "name": "stock-operator-ui",
+  "private": true,
+  "version": "0.2.12",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "typecheck": "vue-tsc -b",
+    "test": "vitest run",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "vue": "^3.5.22",
+    "vue-i18n": "^11.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "@vue/test-utils": "^2.4.6",
+    "jsdom": "^26.1.0",
+    "typescript": "^5.9.2",
+    "vite": "^6.3.6",
+    "vitest": "^3.2.4",
+    "vue-tsc": "^2.2.12"
+  }
+}

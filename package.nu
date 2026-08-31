@@ -22,6 +22,14 @@ def main [
   if not (($root | path join "tauri.conf.json") | path exists) { error make {msg: "missing tauri.conf.json"} }
   if not (($root | path join "ui/index.html") | path exists) { error make {msg: "missing ui/index.html"} }
 
+  # Build frontend assets (Vite) before Rust - required for Tauri frontendDist ui/dist.
+  if (($root | path join "ui/package.json") | path exists) {
+    print "building frontend (ui) with bun..."
+    ^bun install --cwd ($root | path join "ui")
+    ^bun run --cwd ($root | path join "ui") build
+    if not (($root | path join "ui/dist/index.html") | path exists) { error make {msg: "frontend build failed: missing ui/dist/index.html"} }
+  }
+
   # Build release binary (Tauri codegen runs via build.rs). Keep deployment target 26.0 aligned with Info.plist.
   with-env {MACOSX_DEPLOYMENT_TARGET: "26.0"} {
     if ($target | is-empty) {

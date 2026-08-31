@@ -35,6 +35,20 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Build frontend
+        run: |
+          set -euo pipefail
+          bun --cwd ui install
+          bun --cwd ui run build
+          test -f ui/dist/index.html
+          test -f ui/dist/theme-bootstrap.js
+          ls -lh ui/dist/
+
       - name: Install Nushell
         run: |
           set -euo pipefail
