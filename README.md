@@ -15,8 +15,9 @@ Remote: `https://forgejo.cloud1ful.com/research/stock-operator` (private, no aut
 
 ## Run
 
-Grant Accessibility permission to the process in **System Settings -> Privacy
-& Security -> Accessibility**, then run the desktop app:
+Grant Accessibility permission to the **Stock Operator** app bundle in
+**System Settings -> Privacy & Security -> Accessibility**, then run the
+desktop app:
 
 ```sh
 nu package.nu
@@ -44,17 +45,29 @@ Recording** permission for the `stock-operator` process and its macOS OCR
 helper. The helper uses ScreenCaptureKit and Vision in memory and does not save
 the captured window image.
 
-At startup the process calls macOS `AXIsProcessTrustedWithOptions` with the
-system prompt enabled. If macOS does not show a prompt, add the executable
-manually in Accessibility settings. The current debug executable is:
+At startup the app does a non-prompting Accessibility status check
+(`AXIsProcessTrusted` / `is_process_trusted`, surfaced via `accessibility_status`
+and the desktop Status card) and does not repeatedly open the system permission
+dialog. If permission is not granted, add the entry manually in
+**System Settings -> Privacy & Security -> Accessibility** and switch it on.
 
-```text
-target/debug/stock-operator
-```
+macOS Accessibility permission is identity-specific (TCC): grant the exact
+released `.app` bundle for normal use, or the exact debug executable only when
+intentionally running `cargo run`:
 
-After adding it, switch the entry on. A rebuilt debug executable can have a new
-ad-hoc code identity, so a stable signed `.app` bundle should be used before
-long-running or production-like use.
+- Released app (recommended): `Stock Operator.app` bundle identifier
+  `com.cloudiful.stock-operator` — grant this bundle (the installed
+  `Stock Operator.app`, not a bare binary)
+- Debug `cargo run` (when intentionally testing): `target/debug/stock-operator`
+  — a rebuilt ad-hoc-signed debug binary has a new code identity and may
+  require re-granting, so prefer the stable signed `.app` before long-running
+  use
+
+`cargo run` with no arguments now loads the checked-in local UI from `ui/`
+(`ui/index.html`, `ui/main.js`, `ui/styles.css`) via `tauri.conf.json`
+`frontendDist: "ui"`; no `http://localhost:5173` dev server or frontend build
+step is required. Both `cargo run` and the packaged `.app` use the same local
+assets — `tauri.conf.json` no longer sets `build.devUrl`.
 
 The MCP endpoint defaults to:
 

@@ -66,14 +66,6 @@ impl AccessibilityInspector {
         Self { config }
     }
 
-    pub fn request_permission_prompt(&self) -> bool {
-        if process_trust::is_process_trusted() {
-            return true;
-        }
-
-        process_trust::is_process_trusted_with_prompt()
-    }
-
     pub fn status(&self) -> AccessibilityStatus {
         let target_pid = find_target_pid(
             &self.config.target_process_name,

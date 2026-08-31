@@ -75,7 +75,7 @@ pub async fn run() -> Result<()> {
 
     let inspector = AccessibilityInspector::new(config.clone());
     let service = OperatorService::new(inspector.clone(), Arc::new(storage.clone()));
-    if !inspector.request_permission_prompt() {
+    if !inspector.status().process_trusted {
         info!("Accessibility permission is not granted yet");
     }
 
