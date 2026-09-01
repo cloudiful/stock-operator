@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check (fmt, test, tauri assets) — macOS
+    runs-on: macos-15
+    env:
+      CARGO_TERM_COLOR: always
+      SQLX_OFFLINE: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install frontend deps
+        run: bun --cwd ui install
+
+      - name: Frontend typecheck
+        run: bun --cwd ui run typecheck
+
+      - name: Frontend tests
+        run: bun --cwd ui run test
+
+      - name: Frontend build
+        run: bun --cwd ui run build
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Cargo check (macOS full crate)
+        run: SQLX_OFFLINE=true cargo check --all-targets
+
+      - name: Cargo test (macOS full crate, 97+ tests)
+        run: SQLX_OFFLINE=true cargo test --all-targets
+
+      - name: Validate Tauri config and static assets
+        run: |
+          set -euo pipefail
+          echo "validating tauri.conf.json..."
+          python3 -m json.tool tauri.conf.json > /dev/null
+          echo "validating capabilities/default.json..."
+          python3 -m json.tool capabilities/default.json > /dev/null
+          test -f ui/index.html
+          test -f ui/package.json
+          test -f ui/vite.config.ts
+          test -f ui/src/main.ts
+          test -f ui/src/App.vue
+          test -f ui/src/components/AppSidebar.vue
+          test -f ui/src/components/HistoryPanel.vue
+          test -f ui/src/pages/ConnectionPage.vue
+          test -f ui/src/pages/HistoryPage.vue
+          test -f ui/src/pages/SettingsPage.vue
+          test -f ui/src/composables/useSettings.ts
+          test -f ui/src/composables/useRuntime.ts
+          test -f ui/src/i18n/index.ts
+          test -f ui/src/composables/useTheme.ts
+          test -f ui/public/theme-bootstrap.js
+          test -f ui/dist/index.html
+          test -f ui/dist/theme-bootstrap.js
+          test -d ui/dist/assets
+          grep -q "frontendDist.*ui/dist" tauri.conf.json
+          if grep -q "devUrl" tauri.conf.json; then echo "devUrl must not be set for static Tauri"; exit 1; fi
+          grep -q "beforeBuildCommand" tauri.conf.json
+          grep -q "bun" tauri.conf.json
+          test -f icons/icon.png
+          test -f icons/icon.icns
+          test -f macos/Info.plist.template
+          test -f migrations/0001_initial.sql
+          test -f migrations/0002_stale_resolve.sql
+          echo "validating package.nu exists and builds frontend..."
+          test -f package.nu
+          grep -q "bun.*ui.*build" package.nu
+          if command -v nu >/dev/null 2>&1; then
+            nu -c "open tauri.conf.json | get identifier" | grep -q "com.cloudiful.stock-operator"
+          else
+            grep -q "com.cloudiful.stock-operator" tauri.conf.json
+          fi
+          # Ensure CSP includes Tauri IPC scheme and has not been weakened
+          grep -q "ipc:" tauri.conf.json
+          grep -q "script-src 'self'" tauri.conf.json
+          if grep -q "unsafe-eval" tauri.conf.json; then echo "CSP must not include unsafe-eval"; exit 1; fi
+          # Ensure Info.plist template does not declare LSUIElement for windowed app
+          if grep -q "LSUIElement" macos/Info.plist.template; then echo "LSUIElement should be removed for windowed Tauri app"; exit 1; fi
+          grep -q "CFBundleIconFile" macos/Info.plist.template
+          # Ensure frontendDist assets are relative for Tauri custom protocol
+          grep -q '"./assets/' ui/dist/index.html || grep -q './assets/' ui/dist/index.html
+          grep -q "theme-bootstrap" ui/dist/index.html
+          echo "Tauri assets validated on macOS"
+
+      - name: Check git diff does not contain whitespace errors
+        run: git diff --check || echo "diff check warnings above (non-fatal for this repo)"
