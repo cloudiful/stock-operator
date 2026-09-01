@@ -24,7 +24,7 @@ The MCP interface does not autonomously confirm, submit, or cancel orders.
 
 ## Install
 
-1. Download the archive for Apple Silicon or Intel from [Releases](../../releases).
+1. Download the Apple Silicon archive from [Releases](../../releases).
 2. Verify the downloaded archive with the matching entry in `SHA256SUMS`:
 
    ```sh

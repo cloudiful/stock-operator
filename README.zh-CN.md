@@ -23,7 +23,7 @@ MCP 接口不会自动确认、提交或撤销订单。
 
 ## 安装
 
-1. 从 [Releases](../../releases) 下载适用于 Apple Silicon 或 Intel 的归档文件。
+1. 从 [Releases](../../releases) 下载适用于 Apple Silicon 的归档文件。
 2. 使用 `SHA256SUMS` 中对应的条目校验归档文件：
 
    ```sh

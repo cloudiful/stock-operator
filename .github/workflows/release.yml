@@ -18,9 +18,6 @@ jobs:
           - target: aarch64-apple-darwin
             runner: macos-15
             arch: arm64
-          - target: x86_64-apple-darwin
-            runner: macos-13
-            arch: x86_64
     runs-on: ${{ matrix.runner }}
     env:
       CARGO_TERM_COLOR: always
@@ -43,8 +40,8 @@ jobs:
       - name: Build frontend
         run: |
           set -euo pipefail
-          bun --cwd ui install
-          bun --cwd ui run build
+          bun install --cwd ui
+          bun run --cwd ui build
           test -f ui/dist/index.html
           test -f ui/dist/theme-bootstrap.js
           ls -lh ui/dist/
