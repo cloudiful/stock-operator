@@ -32,6 +32,11 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.17.0
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -46,16 +51,20 @@ jobs:
           test -f ui/dist/theme-bootstrap.js
           ls -lh ui/dist/
 
-      - name: Install Nushell
-        run: |
-          set -euo pipefail
-          if ! command -v nu >/dev/null 2>&1; then
-            brew update
-            brew install nushell
-          fi
-          nu --version
+      - name: Setup Nushell
+        uses: hustcer/setup-nu@9215c80adb545a85c419d5085b76eb6d082f49e7 # v3
+        with:
+          version: "0.115.1"
 
       - name: Build and package .app
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RUSTC_WRAPPER: sccache
+          SCCACHE_BASEDIRS: ${{ github.workspace }}
+          SCCACHE_BUCKET: sccache
+          SCCACHE_ENDPOINT: https://12412d5b061683494ea3e5c217d6a961.r2.cloudflarestorage.com
+          SCCACHE_REGION: auto
         run: |
           set -euo pipefail
           echo "target=${{ matrix.target }} arch=${{ matrix.arch }} ref=${{ github.ref_name }}"
@@ -66,6 +75,18 @@ jobs:
           test -f "target/stock-operator-${{ matrix.target }}/Stock Operator.app/Contents/Info.plist"
           codesign --verify --deep --strict --verbose=2 "target/stock-operator-${{ matrix.target }}/Stock Operator.app" || true
           plutil -lint "target/stock-operator-${{ matrix.target }}/Stock Operator.app/Contents/Info.plist"
+
+      - name: Show sccache stats
+        if: always()
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RUSTC_WRAPPER: sccache
+          SCCACHE_BASEDIRS: ${{ github.workspace }}
+          SCCACHE_BUCKET: sccache
+          SCCACHE_ENDPOINT: https://12412d5b061683494ea3e5c217d6a961.r2.cloudflarestorage.com
+          SCCACHE_REGION: auto
+        run: sccache --show-stats
 
       - name: Create clickable .app archive
         run: |
