@@ -55,10 +55,10 @@ authentication are configured. Do not expose it to the public internet.
 
 ## From Source
 
-Install Rust, Bun, and Nushell, then run:
+Install Rust and Bun, then run:
 
 ```sh
-nu package.nu
+sh package.sh
 open "target/stock-operator/Stock Operator.app"
 ```
 

@@ -51,11 +51,6 @@ jobs:
           test -f ui/dist/theme-bootstrap.js
           ls -lh ui/dist/
 
-      - name: Setup Nushell
-        uses: hustcer/setup-nu@9215c80adb545a85c419d5085b76eb6d082f49e7 # v3
-        with:
-          version: "0.115.1"
-
       - name: Build and package .app
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -68,7 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "target=${{ matrix.target }} arch=${{ matrix.arch }} ref=${{ github.ref_name }}"
-          nu package.nu --target ${{ matrix.target }} --output "target/stock-operator-${{ matrix.target }}/Stock Operator.app"
+          sh package.sh --target ${{ matrix.target }} --output "target/stock-operator-${{ matrix.target }}/Stock Operator.app"
           ls -R "target/stock-operator-${{ matrix.target }}/Stock Operator.app"
           test -f "target/stock-operator-${{ matrix.target }}/Stock Operator.app/Contents/MacOS/stock-operator"
           test -f "target/stock-operator-${{ matrix.target }}/Stock Operator.app/Contents/Helpers/window-ocr"

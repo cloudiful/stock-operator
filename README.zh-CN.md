@@ -54,10 +54,10 @@ http://127.0.0.1:5190/mcp
 
 ## 从源码构建
 
-安装 Rust、Bun 和 Nushell 后运行：
+安装 Rust 和 Bun 后运行：
 
 ```sh
-nu package.nu
+sh package.sh
 open "target/stock-operator/Stock Operator.app"
 ```
 
