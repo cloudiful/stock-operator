@@ -88,29 +88,44 @@ jobs:
           SCCACHE_REGION: auto
         run: sccache --show-stats
 
-      - name: Create clickable .app archive
+      - name: Create DMG from .app
         run: |
           set -euo pipefail
           VERSION="${{ github.ref_name }}"
           TARGET="${{ matrix.target }}"
           APP_DIR="target/stock-operator-${TARGET}"
-          ZIP_NAME="stock-operator-${VERSION}-${TARGET}.app.zip"
-          # ditto preserves macOS bundle metadata better than zip
-          ditto -c -k --keepParent "${APP_DIR}/Stock Operator.app" "${ZIP_NAME}"
-          # alternative fallback: zip -r "${ZIP_NAME}" "${APP_DIR}/Stock Operator.app"
-          ls -lh "${ZIP_NAME}"
-          shasum -a 256 "${ZIP_NAME}" | tee "${ZIP_NAME}.sha256"
-          # Also produce individual SHA file for upload
-          shasum -a 256 "${ZIP_NAME}" > "SHA256SUMS-${TARGET}.txt"
+          DMG_NAME="stock-operator-${VERSION}-${TARGET}.dmg"
+          STAGE_DIR="$(mktemp -d)"
+          MOUNT_DIR="$(mktemp -d)"
+          cleanup() {
+            hdiutil detach "${MOUNT_DIR}" 2>/dev/null || true
+            rm -rf "${STAGE_DIR}" "${MOUNT_DIR}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          ditto "${APP_DIR}/Stock Operator.app" "${STAGE_DIR}/Stock Operator.app"
+          hdiutil create -volname "Stock Operator" -srcfolder "${STAGE_DIR}" -ov -format UDZO "${DMG_NAME}"
+          ls -lh "${DMG_NAME}"
+          hdiutil verify "${DMG_NAME}"
+          hdiutil imageinfo "${DMG_NAME}" | head -n 100
+          hdiutil attach "${DMG_NAME}" -mountpoint "${MOUNT_DIR}" -nobrowse -readonly
+          ls -R "${MOUNT_DIR}"
+          test -f "${MOUNT_DIR}/Stock Operator.app/Contents/MacOS/stock-operator"
+          test -f "${MOUNT_DIR}/Stock Operator.app/Contents/Helpers/window-ocr"
+          test -f "${MOUNT_DIR}/Stock Operator.app/Contents/Info.plist"
+          hdiutil detach "${MOUNT_DIR}"
+          trap - EXIT
+          rm -rf "${STAGE_DIR}" "${MOUNT_DIR}"
+          shasum -a 256 "${DMG_NAME}" | tee "${DMG_NAME}.sha256"
+          shasum -a 256 "${DMG_NAME}" > "SHA256SUMS-${TARGET}.txt"
           cat "SHA256SUMS-${TARGET}.txt"
 
-      - name: Upload archive artifact
+      - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-${{ matrix.target }}
+          name: dmg-${{ matrix.target }}
           path: |
-            stock-operator-*.app.zip
-            stock-operator-*.app.zip.sha256
+            stock-operator-*.dmg
+            stock-operator-*.dmg.sha256
             SHA256SUMS-*.txt
           if-no-files-found: error
           retention-days: 14
@@ -121,7 +136,7 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
-      - name: Download all archives
+      - name: Download all DMGs
         uses: actions/download-artifact@v4
         with:
           path: dist
@@ -131,17 +146,16 @@ jobs:
           set -euo pipefail
           ls -R dist
           mkdir -p release
-          find dist -name "*.app.zip" -exec cp {} release/ \;
+          find dist -name "*.dmg" -exec cp {} release/ \;
           find dist -name "*.sha256" -exec cp {} release/ \;
           ls -lh release
-          # Generate combined SHA256SUMS
-          (cd release && shasum -a 256 *.app.zip > SHA256SUMS)
+          (cd release && shasum -a 256 *.dmg > SHA256SUMS)
           cat release/SHA256SUMS
-          # Verify each zip is at least 1MB (bundle not empty)
-          for f in release/*.app.zip; do
+          (cd release && shasum -a 256 -c SHA256SUMS)
+          for f in release/*.dmg; do
             size=$(wc -c < "$f")
             echo "$f size=$size"
-            if [ "$size" -lt 1048576 ]; then echo "archive too small: $f"; exit 1; fi
+            if [ "$size" -lt 1048576 ]; then echo "DMG too small: $f"; exit 1; fi
           done
 
       - name: Publish Release

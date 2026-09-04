@@ -23,15 +23,15 @@ MCP 接口不会自动确认、提交或撤销订单。
 
 ## 安装
 
-1. 从 [Releases](../../releases) 下载适用于 Apple Silicon 的归档文件。
-2. 使用 `SHA256SUMS` 中对应的条目校验归档文件：
+1. 从 [Releases](../../releases) 下载适用于 Apple Silicon 的 DMG。
+2. 使用 `SHA256SUMS` 校验 DMG：
 
    ```sh
    shasum -a 256 -c SHA256SUMS
    ```
 
-3. 解压归档，并将 `Stock Operator.app` 移动到 `/Applications`。
-4. 打开应用，按提示授予 macOS 权限。
+3. 打开 DMG，将 `Stock Operator.app` 拖到 `/Applications`。
+4. 从 `/Applications` 启动应用，并按提示授予 macOS 权限。
 
 当前 release 可能使用 ad-hoc 签名。如果 macOS 阻止首次启动，请在 Finder
 中对可信的构建使用“打开”命令。

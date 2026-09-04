@@ -24,15 +24,15 @@ The MCP interface does not autonomously confirm, submit, or cancel orders.
 
 ## Install
 
-1. Download the Apple Silicon archive from [Releases](../../releases).
-2. Verify the downloaded archive with the matching entry in `SHA256SUMS`:
+1. Download the Apple Silicon DMG from [Releases](../../releases).
+2. Verify the DMG with `SHA256SUMS`:
 
    ```sh
    shasum -a 256 -c SHA256SUMS
    ```
 
-3. Unzip the archive and move `Stock Operator.app` to `/Applications`.
-4. Open the app and grant the requested macOS permissions.
+3. Open the DMG and drag `Stock Operator.app` to `/Applications`.
+4. Launch the app from `/Applications` and grant the requested macOS permissions.
 
 The current release may be ad-hoc signed. If macOS blocks the first launch,
 use Finder's **Open** command for a build you trust.
