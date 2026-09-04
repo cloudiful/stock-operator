@@ -22,7 +22,7 @@ use crate::desktop;
 use tauri::{Emitter, Manager};
 
 pub async fn run() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt::init().json();
     let cli = Cli::parse();
 
     // Resolve DB path before opening storage so we can locate SQLite on first run.
