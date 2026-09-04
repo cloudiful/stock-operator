@@ -98,12 +98,17 @@ jobs:
           }
           trap cleanup EXIT
           ditto "${APP_DIR}/Stock Operator.app" "${STAGE_DIR}/Stock Operator.app"
+          ln -s /Applications "${STAGE_DIR}/Applications"
           hdiutil create -volname "Stock Operator" -srcfolder "${STAGE_DIR}" -ov -format UDZO "${DMG_NAME}"
           ls -lh "${DMG_NAME}"
           hdiutil verify "${DMG_NAME}"
           hdiutil imageinfo "${DMG_NAME}" | head -n 100
           hdiutil attach "${DMG_NAME}" -mountpoint "${MOUNT_DIR}" -nobrowse -readonly
+          ls -l "${MOUNT_DIR}"
           ls -R "${MOUNT_DIR}"
+          test -d "${MOUNT_DIR}/Stock Operator.app"
+          test -L "${MOUNT_DIR}/Applications"
+          test "$(readlink "${MOUNT_DIR}/Applications")" = "/Applications"
           test -f "${MOUNT_DIR}/Stock Operator.app/Contents/MacOS/stock-operator"
           test -f "${MOUNT_DIR}/Stock Operator.app/Contents/Helpers/window-ocr"
           test -f "${MOUNT_DIR}/Stock Operator.app/Contents/Info.plist"

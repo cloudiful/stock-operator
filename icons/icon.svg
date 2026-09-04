@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>Stock Operator</title>
+<desc>Rounded-square graphite navy icon with high-contrast white and cyan-green market chart rising geometry.</desc>
+<defs>
+  <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+    <stop offset="0%" stop-color="#1E2A44"/>
+    <stop offset="100%" stop-color="#0F172A"/>
+  </linearGradient>
+  <linearGradient id="area" x1="0%" y1="0%" x2="0%" y2="100%">
+    <stop offset="0%" stop-color="#22D3EE" stop-opacity="0.32"/>
+    <stop offset="100%" stop-color="#22D3EE" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="glow" x1="0%" y1="0%" x2="100%" y2="0%">
+    <stop offset="0%" stop-color="#22D3EE"/>
+    <stop offset="100%" stop-color="#22C55E"/>
+  </linearGradient>
+</defs>
+<!-- macOS rounded-square silhouette -->
+<rect x="0" y="0" width="1024" height="1024" rx="230" ry="230" fill="url(#bg)"/>
+<!-- subtle top highlight for depth -->
+<rect x="0.5" y="0.5" width="1023" height="1023" rx="230" ry="230" fill="none" stroke="#FFFFFF" stroke-opacity="0.07" stroke-width="2"/>
+<!-- grid: restrained, high-contrast but low opacity -->
+<g stroke="#FFFFFF" stroke-width="3" stroke-opacity="0.13" stroke-linecap="round">
+  <line x1="128" y1="376" x2="896" y2="376"/>
+  <line x1="128" y1="476" x2="896" y2="476"/>
+  <line x1="128" y1="576" x2="896" y2="576"/>
+  <line x1="128" y1="676" x2="896" y2="676"/>
+</g>
+<g stroke="#FFFFFF" stroke-width="2.5" stroke-opacity="0.07" stroke-linecap="round">
+  <line x1="268" y1="320" x2="268" y2="760"/>
+  <line x1="420" y1="320" x2="420" y2="760"/>
+  <line x1="572" y1="320" x2="572" y2="760"/>
+  <line x1="724" y1="320" x2="724" y2="760"/>
+</g>
+<!-- filled area under chart -->
+<path d="M 140 700 L 282 546 L 405 602 L 538 428 L 648 348 L 760 396 L 884 288 L 884 760 L 140 760 Z" fill="url(#area)" stroke="none"/>
+<!-- main chart line: thick white for legibility at small sizes -->
+<path d="M 140 700 L 282 546 L 405 602 L 538 428 L 648 348 L 760 396 L 884 288" fill="none" stroke="#FFFFFF" stroke-width="36" stroke-linecap="round" stroke-linejoin="round"/>
+<!-- colored progression overlay: cyan to green tint along final rise, thin inner accent -->
+<path d="M 538 428 L 648 348 L 760 396 L 884 288" fill="none" stroke="url(#glow)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" opacity="0.95"/>
+<!-- baseline anchor -->
+<rect x="128" y="756" width="768" height="6" rx="3" fill="#FFFFFF" opacity="0.18"/>
+<!-- vertex markers: high-contrast, thick dark outline for small-size separation -->
+<circle cx="282" cy="546" r="26" fill="#22D3EE" stroke="#0F172A" stroke-width="8"/>
+<circle cx="405" cy="602" r="20" fill="#EF4444" stroke="#0F172A" stroke-width="7"/>
+<circle cx="538" cy="428" r="24" fill="#FFFFFF" stroke="#0F172A" stroke-width="7"/>
+<circle cx="648" cy="348" r="26" fill="#22D3EE" stroke="#0F172A" stroke-width="8"/>
+<circle cx="760" cy="396" r="18" fill="#FFFFFF" stroke="#0F172A" stroke-width="6"/>
+<!-- final peak: green success marker -->
+<circle cx="884" cy="288" r="30" fill="#22C55E" stroke="#FFFFFF" stroke-width="8"/>
+<circle cx="884" cy="288" r="10" fill="#FFFFFF"/>
+</svg>

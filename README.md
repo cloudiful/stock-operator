@@ -31,7 +31,7 @@ The MCP interface does not autonomously confirm, submit, or cancel orders.
    shasum -a 256 -c SHA256SUMS
    ```
 
-3. Open the DMG and drag `Stock Operator.app` to `/Applications`.
+3. Open the DMG and drag `Stock Operator.app` onto the `Applications` shortcut.
 4. Launch the app from `/Applications` and grant the requested macOS permissions.
 
 The current release may be ad-hoc signed. If macOS blocks the first launch,

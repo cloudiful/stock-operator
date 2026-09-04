@@ -30,7 +30,7 @@ MCP 接口不会自动确认、提交或撤销订单。
    shasum -a 256 -c SHA256SUMS
    ```
 
-3. 打开 DMG，将 `Stock Operator.app` 拖到 `/Applications`。
+3. 打开 DMG，将 `Stock Operator.app` 拖到 `Applications` 快捷方式上。
 4. 从 `/Applications` 启动应用，并按提示授予 macOS 权限。
 
 当前 release 可能使用 ad-hoc 签名。如果 macOS 阻止首次启动，请在 Finder

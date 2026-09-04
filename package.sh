@@ -113,6 +113,13 @@ if [ -f "$root/ui/package.json" ]; then
   fi
 fi
 
+# Generate macOS icon assets before packaging (macOS only, uses sips/iconutil)
+if [ "$(uname -s)" = "Darwin" ]; then
+  if [ -f "$root/icons/generate-macos-icons.sh" ]; then
+    sh "$root/icons/generate-macos-icons.sh"
+  fi
+fi
+
 if [ -z "$target" ]; then
   MACOSX_DEPLOYMENT_TARGET=26.0 cargo build --release -p stock-operator --manifest-path "$manifest"
 else
