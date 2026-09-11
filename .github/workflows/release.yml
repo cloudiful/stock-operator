@@ -25,7 +25,7 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "26.0"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust stable with target
         uses: dtolnay/rust-toolchain@stable
@@ -33,7 +33,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install sccache
-        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        uses: mozilla-actions/sccache-action@v0.0.11
         with:
           version: v0.17.0
 
@@ -112,7 +112,7 @@ jobs:
           cat "SHA256SUMS-${TARGET}.txt"
 
       - name: Upload DMG artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dmg-${{ matrix.target }}
           path: |
@@ -129,7 +129,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Download all DMGs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
 
@@ -151,7 +151,7 @@ jobs:
           done
 
       - name: Publish Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: release/*
           generate_release_notes: true
