@@ -11,7 +11,10 @@ use axum::{
 use rmcp::{
     ErrorData as McpError, Json, RoleServer, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo},
+    model::{
+        InitializeRequestParams, InitializeResult, PaginatedRequestParams, ProtocolVersion,
+        ServerCapabilities, ServerInfo,
+    },
     service::RequestContext,
     tool, tool_handler, tool_router,
     transport::streamable_http_server::{
@@ -557,6 +560,15 @@ struct AbortOperationArgs {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for OperatorMcpServer {
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, McpError> {
+        context.peer.set_peer_info(request.clone());
+        self.negotiate_initialize(&request)
+    }
+
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2026_07_28)
