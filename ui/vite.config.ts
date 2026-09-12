@@ -6,7 +6,7 @@ import { defineConfig } from 'vitest/config'
 // Tauri static assets: use relative base so file:// and custom protocol work without domain root assumptions.
 export default defineConfig({
   base: './',
-  plugins: [vue(), ui({ router: false, colorMode: false })],
+  plugins: [vue(), ui({ router: false, colorMode: false, experimental: { componentDetection: true } })],
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
