@@ -257,7 +257,7 @@ fn observed_grid_table(panel: GridPanel, table: &GridTable) -> ObservedGridTable
     }));
     let quality = quality_of_rows(&rows);
     let mut warnings = vec![format!(
-        "{} table was copied from the focused grid (Tab focus + Ctrl+A/Ctrl+C); no click, Enter or panel shortcut is sent",
+        "{} table was copied from the focused grid (Ctrl+A/Ctrl+C); no click, Enter or panel shortcut is sent",
         panel.label()
     )];
     if quality != DataQuality::Exact {

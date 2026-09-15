@@ -53,19 +53,33 @@ pub struct RawWindow {
     pub rect: Rect,
 }
 
+/// Discovery order for [`find_main_window`]: exact recorded evidence first, then
+/// the class-only and title-only fallbacks, with `None` meaning "no filter".
+pub const MAIN_WINDOW_ATTEMPTS: [(Option<&str>, Option<&str>); 3] = [
+    (Some(MAIN_WINDOW_CLASS), Some(MAIN_WINDOW_TITLE)),
+    (Some(MAIN_WINDOW_CLASS), None),
+    (None, Some(MAIN_WINDOW_TITLE)),
+];
+
 /// Finds the main terminal window: class + title, then class-only, then
 /// title-only so a version bump that changes the class is still discovered.
+///
+/// The MFC class carries the module instance handle of the running process
+/// (`Afx:00500000:b:...:00220257` on 2026-09-15 vs `Afx:00230000:b:...:01100729`
+/// in the recorded evidence), so it changes on every launch and the title-only
+/// attempt is the one that keeps discovery working. `FindWindowW` needs `NULL`
+/// for "no filter": an empty string matches no window at all, which is why that
+/// fallback must pass a null pointer rather than `[0u16]`.
 pub fn find_main_window() -> Result<isize> {
-    let class = wide(MAIN_WINDOW_CLASS);
-    let title = wide(MAIN_WINDOW_TITLE);
-    let empty = [0u16];
-    let attempts = [
-        (class.as_ptr(), title.as_ptr()),
-        (class.as_ptr(), empty.as_ptr()),
-        (empty.as_ptr(), title.as_ptr()),
-    ];
-    for (class_ptr, title_ptr) in attempts {
-        let handle = unsafe { ffi::FindWindowW(class_ptr, title_ptr) };
+    for (class, title) in MAIN_WINDOW_ATTEMPTS {
+        let class = class.map(wide);
+        let title = title.map(wide);
+        let handle = unsafe {
+            ffi::FindWindowW(
+                class.as_ref().map_or(std::ptr::null(), |value| value.as_ptr()),
+                title.as_ref().map_or(std::ptr::null(), |value| value.as_ptr()),
+            )
+        };
         if handle != 0 {
             return Ok(handle);
         }
@@ -198,5 +212,31 @@ mod ffi {
         pub fn GetWindowThreadProcessId(handle: Hwnd, pid: *mut u32) -> u32;
         pub fn GetParent(handle: Hwnd) -> Hwnd;
         pub fn GetWindowRect(handle: Hwnd, rect: *mut RawRect) -> Bool;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression (2026-09-15): the fallbacks passed empty strings, which
+    /// `FindWindowW` reads as a filter that matches no window, so a launch whose
+    /// MFC class differed from the recorded evidence could never be found. The
+    /// live terminal is only reachable through the title-only fallback, and it
+    /// must ask for "no class filter", i.e. `None`.
+    #[test]
+    fn fallbacks_ask_for_no_filter_instead_of_an_empty_string() {
+        assert_eq!(
+            MAIN_WINDOW_ATTEMPTS[0],
+            (Some(MAIN_WINDOW_CLASS), Some(MAIN_WINDOW_TITLE))
+        );
+        assert_eq!(MAIN_WINDOW_ATTEMPTS[1], (Some(MAIN_WINDOW_CLASS), None));
+        assert_eq!(MAIN_WINDOW_ATTEMPTS[2], (None, Some(MAIN_WINDOW_TITLE)));
+        assert!(
+            MAIN_WINDOW_ATTEMPTS
+                .iter()
+                .all(|(class, title)| class.is_some() || title.is_some()),
+            "an attempt must never filter by nothing at all"
+        );
     }
 }

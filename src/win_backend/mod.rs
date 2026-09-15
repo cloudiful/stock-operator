@@ -4,6 +4,7 @@
 //! health gate (`mutations_allowed`). Task 3 adds popup handling (`popups`) and
 //! Task 4 adds the clipboard grid reads (`grid`).
 
+pub mod captcha;
 pub mod grid;
 pub mod popups;
 pub mod read;

@@ -30,6 +30,9 @@ use super::{read, window};
 use self::decision::{PopupPlan, plan_for, verify_dismissed};
 use self::input::UiInput;
 
+pub(crate) use image::Frame;
+pub(crate) use screen::{capture_client, client_origin, visible_dialogs};
+
 const MAX_SCAN_WINDOWS: usize = 4096;
 /// Pause after the dismissal input, before the first verification frame.
 const DISMISS_WAIT_MS: u64 = 400;

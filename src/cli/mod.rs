@@ -5,7 +5,7 @@ use crate::pages::{
 };
 
 #[derive(Debug, clap::Parser)]
-#[command(name = "stock-operator", about = "Local macOS stock UI operator")]
+#[command(name = "stock-operator", about = "Supervised brokerage workflow operator for the Windows terminal")]
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) command: Option<Command>,

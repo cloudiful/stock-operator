@@ -4,18 +4,17 @@
 //! exposed through `GetWindowTextW`, so the table is copied out of the terminal
 //! and parsed as clipboard TSV.
 //!
-//! Safety rules of this read path (phase Task 4):
+//! Safety rules of this read path:
 //!
-//! - the only synthesized keys are `Tab` (grid focus), `Ctrl+A` and `Ctrl+C`
-//!   (copy); never a click, `Enter`, an order/cancel control or a panel shortcut;
+//! - the only synthesized keys are `Ctrl+A` and `Ctrl+C` (copy); never `Tab`
+//!   (live evidence: extra tabs drop the grid focus the operator established
+//!   with a click), never a click, `Enter`, an order/cancel control or a panel
+//!   shortcut — panel switching stays manual;
+//! - every copy raises the terminal copy guard, which [`super::captcha`] solves
+//!   (sentinel-gated dialog only, `WM_SETTEXT` plus `BM_CLICK`, cursor unmoved);
 //! - reads are read-only: the panel that is displayed is the panel that is read,
 //!   so a mismatch fails loudly instead of returning another table's rows;
 //! - an empty copy is an error, never an empty table.
-//!
-//! The 和讯 panes track keyboard focus inside the pane window (`GUITHREADINFO`
-//! reports no focused child while the terminal is active), so the focus is not
-//! introspected: the copied payload itself decides whether the grid was reached,
-//! and `Tab` is only pressed to try the next control after a failed copy.
 
 mod clipboard;
 mod keys;
@@ -29,9 +28,10 @@ const ORDER_MARKERS: [&str; 6] =
     ["委托编号", "委托时间", "委托价格", "委托数量", "委托状态", "委托类型"];
 const EXECUTION_MARKERS: [&str; 5] = ["成交编号", "成交时间", "成交价格", "成交金额", "成交日期"];
 
-/// Copy attempts before giving up; every attempt after the first presses `Tab`
-/// once, which is the task's focus budget of at most 20 presses.
-const MAX_COPY_ATTEMPTS: usize = 20;
+/// Copy rounds before giving up: the initial copy plus one guarded retry.
+/// Every copy raises the terminal copy guard, so more rounds only pile up
+/// dialogs; two rounds bound the solves while staying loud on failure.
+const MAX_COPY_ROUNDS: usize = 2;
 
 /// One of the three panels that are read through the clipboard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,18 +78,15 @@ impl GridTable {
 /// Reads `panel` from the grid the terminal is currently displaying.
 ///
 /// Fails when the terminal is missing or minimized, when no grid can be copied
-/// from the focused control, when the copy is not a usable table, or when the
-/// displayed panel is not `panel`.
+/// from the focused control, when the copy guard cannot be solved, when the
+/// copy is not a usable table, or when the displayed panel is not `panel`.
 pub fn read_grid(main_hwnd: isize, panel: GridPanel) -> Result<GridTable> {
     if main_hwnd == 0 {
         bail!("a terminal main window handle is required to read the {} grid", panel.label());
     }
     keys::ensure_readable(main_hwnd)?;
     let mut last_error = String::from("the copy was never attempted");
-    for attempt in 0..MAX_COPY_ATTEMPTS {
-        if attempt > 0 {
-            keys::press_tab(main_hwnd)?;
-        }
+    for _ in 0..MAX_COPY_ROUNDS {
         match copy_grid(main_hwnd).and_then(|text| parse_tsv(&text)) {
             Ok(table) => {
                 verify_panel(&table, panel)?;
@@ -97,9 +94,20 @@ pub fn read_grid(main_hwnd: isize, panel: GridPanel) -> Result<GridTable> {
             }
             Err(error) => last_error = format!("{error:#}"),
         }
+        // An empty copy with the guard showing means the data is held behind
+        // the captcha: solve it, then check for the pending delivery before
+        // copying again (a fresh copy raises a fresh guard).
+        if super::captcha::solve_copy_guard(main_hwnd)?.solved() {
+            if let Ok(text) = clipboard::wait_for_text() {
+                if let Ok(table) = parse_tsv(&text) {
+                    verify_panel(&table, panel)?;
+                    return Ok(table);
+                }
+            }
+        }
     }
     bail!(
-        "no {} grid (class {}) could be copied after {MAX_COPY_ATTEMPTS} attempts (last error: {last_error}); open the {} page, click once inside the table and retry — only Tab/Ctrl+A/Ctrl+C are ever sent",
+        "no {} grid (class {}) could be copied after {MAX_COPY_ROUNDS} rounds (last error: {last_error}); open the {} page, click once inside the table and retry — only Ctrl+A/Ctrl+C are ever sent",
         panel.label(),
         keys::GRID_CLASS_PREFIX,
         panel.label()
@@ -121,8 +129,10 @@ fn copy_grid(main_hwnd: isize) -> Result<String> {
 ///
 /// The first non-empty line is the header row and every following line is a data
 /// row: rows shorter than the header are padded, extra cells are dropped, and
-/// blank lines are ignored. A copy without a header row or without data rows is
-/// an error so a failed copy can never look like an empty table.
+/// blank lines are ignored. The terminal quotes code-like cells Excel-style
+/// (`="600018"` keeps the leading zero); that wrapper is stripped so downstream
+/// mapping sees the bare code. A copy without a header row or without data rows
+/// is an error so a failed copy can never look like an empty table.
 pub fn parse_tsv(text: &str) -> Result<GridTable> {
     let mut lines = text
         .split('\n')
@@ -130,13 +140,19 @@ pub fn parse_tsv(text: &str) -> Result<GridTable> {
     let Some(header) = lines.by_ref().find(|line| !line.is_empty()) else {
         bail!("the copied grid was empty: it held no header row");
     };
-    let columns: Vec<String> = header.split('\t').map(|cell| cell.trim().to_string()).collect();
+    let columns: Vec<String> = header
+        .split('\t')
+        .map(|cell| strip_excel_quotes(cell.trim()))
+        .collect();
     if columns.iter().all(|column| column.is_empty()) {
         bail!("the copied grid header row held no column names");
     }
     let mut rows: Vec<Vec<String>> = Vec::new();
     for line in lines.filter(|line| !line.is_empty()) {
-        let mut cells: Vec<String> = line.split('\t').map(|cell| cell.trim().to_string()).collect();
+        let mut cells: Vec<String> = line
+            .split('\t')
+            .map(|cell| strip_excel_quotes(cell.trim()))
+            .collect();
         if cells.iter().all(|cell| cell.is_empty()) {
             continue;
         }
@@ -148,6 +164,15 @@ pub fn parse_tsv(text: &str) -> Result<GridTable> {
         bail!("the copied grid had a header row but no data rows");
     }
     Ok(GridTable { columns, rows })
+}
+
+/// Strips the terminal's Excel-style code quoting: `="600018"` carries the
+/// code with its leading zero. Anything else passes through untouched.
+fn strip_excel_quotes(cell: &str) -> String {
+    cell.strip_prefix('=')
+        .and_then(|rest| rest.strip_prefix('"').and_then(|rest| rest.strip_suffix('"')))
+        .map(str::to_string)
+        .unwrap_or_else(|| cell.to_string())
 }
 
 /// Identifies the panel from the copied header row; a tie or no match stays
@@ -223,6 +248,16 @@ mod tests {
         assert_eq!(table.rows[0][1], "上港集团");
         assert_eq!(table.rows[1].len(), 7, "the trailing tab must not create a column");
         assert_eq!(table.rows[2], ["000807", "云铝股份", "200", "200", "", "", ""]);
+    }
+
+    #[test]
+    fn excel_quoted_codes_parse_to_bare_codes() {
+        let table = parse_tsv("证券代码\t证券名称\n=\"600018\"\t上港集团\n").expect("parsable");
+        assert_eq!(table.rows[0][0], "600018");
+        assert_eq!(strip_excel_quotes("600018"), "600018");
+        assert_eq!(strip_excel_quotes("=\"A842988848\""), "A842988848");
+        assert_eq!(strip_excel_quotes("=\"12"), "=\"12");
+        assert_eq!(strip_excel_quotes(""), "");
     }
 
     #[test]

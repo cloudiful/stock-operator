@@ -1,10 +1,11 @@
 //! Focus and synthesized keys for the grid read.
 //!
-//! Only `Tab` (to reach the grid), `Ctrl+A` and `Ctrl+C` (to copy it) are ever
-//! synthesized, and every event is refused unless the terminal owns the
-//! foreground window, so a keystroke can never be delivered to another
-//! application. Panel shortcuts, `Enter` and any control activation are absent
-//! by construction.
+//! Only `Ctrl+A` and `Ctrl+C` (to copy the focused grid) are ever synthesized,
+//! and every event is refused unless the terminal owns the foreground window,
+//! so a keystroke can never be delivered to another application. `Tab`,
+//! panel shortcuts, `Enter` and any control activation are absent by
+//! construction: grid focus is established once by the operator clicking the
+//! table, and the copied payload itself decides whether the grid was reached.
 //!
 //! The terminal's 和讯 panes track keyboard focus inside the pane window, so
 //! `GUITHREADINFO` reports no focused child while the terminal is active: the
@@ -21,7 +22,6 @@ const KEY_SETTLE_MS: u64 = 150;
 
 const KEYEVENTF_KEYUP: u32 = 0x0002;
 const INPUT_KEYBOARD: u32 = 1;
-const VK_TAB: u16 = 0x09;
 const VK_CONTROL: u16 = 0x11;
 pub(crate) const VK_A: u16 = 0x41;
 pub(crate) const VK_C: u16 = 0x43;
@@ -47,11 +47,6 @@ pub fn ensure_readable(main_hwnd: isize) -> Result<()> {
     Ok(())
 }
 
-/// Presses `Tab` once to move keyboard focus to the next control.
-pub fn press_tab(main_hwnd: isize) -> Result<()> {
-    press(main_hwnd, VK_TAB)
-}
-
 /// Sends `Ctrl+<vk>` to the focused control.
 pub fn press_ctrl(main_hwnd: isize, vk: u16) -> Result<()> {
     send(
@@ -63,12 +58,6 @@ pub fn press_ctrl(main_hwnd: isize, vk: u16) -> Result<()> {
             key(VK_CONTROL, KEYEVENTF_KEYUP),
         ],
     )?;
-    sleep(Duration::from_millis(KEY_SETTLE_MS));
-    Ok(())
-}
-
-fn press(main_hwnd: isize, vk: u16) -> Result<()> {
-    send(main_hwnd, &[key(vk, 0), key(vk, KEYEVENTF_KEYUP)])?;
     sleep(Duration::from_millis(KEY_SETTLE_MS));
     Ok(())
 }
