@@ -1,12 +1,11 @@
-#[cfg(target_os = "macos")]
 use std::sync::Arc;
-#[cfg(target_os = "macos")]
 use tokio::{sync::Mutex, task::JoinHandle};
 
-#[cfg(target_os = "macos")]
-use crate::{config::OperatorConfig, operator_service::OperatorService, storage::Storage};
+use crate::{
+    backend::Backend, config::OperatorConfig, operator_service::OperatorService, storage::Storage,
+    win_backend::WinStub,
+};
 
-#[cfg(target_os = "macos")]
 #[derive(Clone)]
 pub struct ServerState {
     pub running: bool,
@@ -14,7 +13,6 @@ pub struct ServerState {
     pub error: Option<String>,
 }
 
-#[cfg(target_os = "macos")]
 #[derive(Clone)]
 pub struct AppState {
     pub storage: Arc<Storage>,
@@ -25,7 +23,6 @@ pub struct AppState {
     pub server_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
-#[cfg(target_os = "macos")]
 impl AppState {
     pub fn new(storage: Arc<Storage>, service: OperatorService, config: OperatorConfig) -> Self {
         let initial = config.clone();
@@ -44,7 +41,6 @@ impl AppState {
     }
 }
 
-#[cfg(target_os = "macos")]
 async fn stop_server(app_state: &AppState) {
     let handle_opt = { app_state.server_handle.lock().await.take() };
     if let Some(handle) = handle_opt {
@@ -55,7 +51,6 @@ async fn stop_server(app_state: &AppState) {
     srv.running = false;
 }
 
-#[cfg(target_os = "macos")]
 async fn start_server(app_state: &AppState) -> Result<(), String> {
     let (token_opt, _) = crate::desktop::keychain::resolve_token();
     let effective = {
@@ -76,8 +71,8 @@ async fn start_server(app_state: &AppState) -> Result<(), String> {
     let mut cfg = app_state.config.lock().await.clone();
     cfg.auth_token = Some(effective_token);
     let bind = cfg.bind_addr;
-    let inspector = crate::ax::AccessibilityInspector::new(cfg.clone());
-    let router = crate::mcp::build_router(&cfg, inspector, app_state.service.clone())
+    let backend: Arc<dyn Backend> = Arc::new(WinStub::new());
+    let router = crate::mcp::build_router(&cfg, backend, app_state.service.clone())
         .map_err(|e| format!("failed to build router: {e}"))?;
     let listener = tokio::net::TcpListener::bind(bind)
         .await
@@ -113,7 +108,6 @@ async fn start_server(app_state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 async fn try_start_server_if_needed(app_state: &AppState) {
     {
         let srv = app_state.server_state.lock().await;
@@ -127,17 +121,14 @@ async fn try_start_server_if_needed(app_state: &AppState) {
     let _ = start_server(app_state).await;
 }
 
-#[cfg(target_os = "macos")]
 pub async fn spawn_background_server(app_state: &AppState) {
     try_start_server_if_needed(app_state).await;
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) async fn stop_server_pub(app_state: &AppState) {
     stop_server(app_state).await;
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) async fn start_server_pub(app_state: &AppState) -> Result<(), String> {
     start_server(app_state).await
 }

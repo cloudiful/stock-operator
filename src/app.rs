@@ -2,27 +2,25 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
+use tauri::{Emitter, Manager};
 use tracing::{info, warn};
 
 use crate::{
-    ax::AccessibilityInspector,
+    backend::Backend,
     cli::{self, Cli, Command, InspectCommand, NavigateCommand, OrderCommand, ReadCommand},
     config::OperatorConfig,
+    desktop,
     mcp::serve,
     operator_service::{
         OperatorService, ReadPanel, ReadRepresentation, ReadRequest, SelectSecurityRequest,
     },
     pages::NavigationTarget,
     storage::Storage,
+    win_backend::WinStub,
 };
 
-#[cfg(target_os = "macos")]
-use crate::desktop;
-#[cfg(target_os = "macos")]
-use tauri::{Emitter, Manager};
-
 pub async fn run() -> Result<()> {
-    tracing_subscriber::fmt::init().json();
+    tracing_subscriber::fmt().json().init();
     let cli = Cli::parse();
 
     // Resolve DB path before opening storage so we can locate SQLite on first run.
@@ -53,7 +51,7 @@ pub async fn run() -> Result<()> {
         .context("failed to seed operator settings")?;
 
     // Note: private-overlay with non-loopback and no token is allowed for desktop startup;
-    // the UI will show server stopped/missing token and allow saving a Keychain token.
+    // the UI will show server stopped/missing token and allow saving a Credential Manager token.
     // `stock-operator serve` and any listener still fail-closed without a token (checked below).
 
     // Ensure instance id exists (generated if not configured)
@@ -73,10 +71,10 @@ pub async fn run() -> Result<()> {
         );
     }
 
-    let inspector = AccessibilityInspector::new(config.clone());
-    let service = OperatorService::new(inspector.clone(), Arc::new(storage.clone()));
-    if !inspector.status().process_trusted {
-        info!("Accessibility permission is not granted yet");
+    let backend: Arc<dyn Backend> = Arc::new(WinStub::new());
+    let service = OperatorService::new(backend.clone(), Arc::new(storage.clone()));
+    if !backend.status().target_found {
+        info!("configured trading terminal process is not running");
     }
 
     match cli.command {
@@ -85,32 +83,18 @@ pub async fn run() -> Result<()> {
             let effective_token = resolve_effective_token(&config);
             let Some(token) = effective_token else {
                 bail!(
-                    "STOCK_OPERATOR_AUTH_TOKEN is required (set env var or save via desktop Keychain) when starting the server"
+                    "STOCK_OPERATOR_AUTH_TOKEN is required (set env var or save via desktop Credential Manager) when starting the server"
                 )
             };
             let mut serve_config = config.clone();
             serve_config.auth_token = Some(token);
             info!(bind_addr = %serve_config.bind_addr, endpoint = %serve_config.endpoint(), "starting headless operator server");
-            serve(serve_config, inspector, service).await
+            serve(serve_config, backend, service).await
         }
         Some(cmd) => dispatch(cmd, &config, &service).await,
         None => {
-            // No CLI command: launch Tauri desktop. Double-clicking the .app arrives here.
-            #[cfg(target_os = "macos")]
-            {
-                return launch_desktop(config, inspector, service, storage).await;
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                info!(bind_addr = %config.bind_addr, endpoint = %config.endpoint(), "starting stock operator HTTP and MCP server");
-                let effective_token = resolve_effective_token(&config);
-                let Some(token) = effective_token else {
-                    bail!("STOCK_OPERATOR_AUTH_TOKEN is required")
-                };
-                let mut serve_config = config.clone();
-                serve_config.auth_token = Some(token);
-                serve(serve_config, inspector, service).await
-            }
+            // No CLI command: launch the Tauri desktop app.
+            return launch_desktop(config, backend, service, storage).await;
         }
     }
 }
@@ -119,26 +103,20 @@ fn resolve_effective_token(config: &OperatorConfig) -> Option<String> {
     if let Some(tok) = config.auth_token.clone().filter(|v| !v.trim().is_empty()) {
         return Some(tok);
     }
-    #[cfg(target_os = "macos")]
-    {
-        let (tok, _) = desktop::keychain::resolve_token();
-        if let Some(t) = tok.filter(|v| !v.trim().is_empty()) {
-            return Some(t);
-        }
+    let (tok, _) = desktop::keychain::resolve_token();
+    if let Some(t) = tok.filter(|v| !v.trim().is_empty()) {
+        return Some(t);
     }
     None
 }
 
-#[cfg(target_os = "macos")]
 async fn launch_desktop(
     config: OperatorConfig,
-    _inspector: AccessibilityInspector,
+    _backend: Arc<dyn Backend>,
     service: OperatorService,
     storage: Storage,
 ) -> Result<()> {
-    use std::sync::Arc;
-
-    // Merge keychain token into config for background server, but keep UI usable without it.
+    // Merge stored token into config for background server, but keep UI usable without it.
     let effective_token = resolve_effective_token(&config);
     let has_token = effective_token.is_some();
     let mut desktop_config = config.clone();
@@ -218,14 +196,14 @@ async fn inspect(
 ) -> Result<()> {
     let value = match command {
         InspectCommand::Openapi => serde_json::to_value(crate::http_api::openapi_document())?,
-        InspectCommand::Probe(args) => serde_json::to_value(
+        InspectCommand::Probe(args) => {
             service
                 .snapshot(
                     args.max_depth.unwrap_or(config.max_depth).clamp(1, 12),
                     args.max_nodes.unwrap_or(config.max_nodes).clamp(1, 2_000),
                 )
-                .await?,
-        )?,
+                .await?
+        }
         InspectCommand::View => serde_json::to_value(service.view().await?)?,
         InspectCommand::Inventory { limit } => service.inventory(limit).await?,
         InspectCommand::Form => service.trade_form().await?,

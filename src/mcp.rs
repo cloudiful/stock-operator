@@ -24,7 +24,7 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ax::AccessibilityInspector,
+    backend::{Backend, BackendStatus},
     config::OperatorConfig,
     http_api::{self, HttpState},
     operator_service::OperatorService,
@@ -41,7 +41,7 @@ use super::{
 
 #[derive(Clone)]
 struct OperatorMcpServer {
-    inspector: AccessibilityInspector,
+    backend: Arc<dyn Backend>,
     service: OperatorService,
     config: OperatorConfig,
     tool_router: ToolRouter<Self>,
@@ -81,12 +81,12 @@ struct ListOperationsArgs {
 #[tool_router(router = tool_router)]
 impl OperatorMcpServer {
     fn new(
-        inspector: AccessibilityInspector,
+        backend: Arc<dyn Backend>,
         service: OperatorService,
         config: OperatorConfig,
     ) -> Self {
         Self {
-            inspector,
+            backend,
             service,
             config,
             tool_router: Self::tool_router(),
@@ -117,8 +117,8 @@ impl OperatorMcpServer {
         name = "accessibility_status",
         description = "Check macOS Accessibility API permission and whether the configured target trading process is running."
     )]
-    async fn accessibility_status(&self) -> Result<Json<super::ax::AccessibilityStatus>, McpError> {
-        Ok(Json(self.inspector.status()))
+    async fn accessibility_status(&self) -> Result<Json<BackendStatus>, McpError> {
+        Ok(Json(self.backend.status()))
     }
 
     #[tool(
@@ -128,7 +128,7 @@ impl OperatorMcpServer {
     async fn inspect_target_app(
         &self,
         Parameters(args): Parameters<SnapshotArgs>,
-    ) -> Result<Json<super::ax::TargetSnapshot>, McpError> {
+    ) -> Result<Json<serde_json::Value>, McpError> {
         self.service
             .snapshot(
                 args.max_depth.unwrap_or(6).clamp(1, 12),
@@ -146,7 +146,7 @@ impl OperatorMcpServer {
     async fn read_trade_snapshot(
         &self,
         Parameters(args): Parameters<SnapshotArgs>,
-    ) -> Result<Json<super::ax::TargetSnapshot>, McpError> {
+    ) -> Result<Json<serde_json::Value>, McpError> {
         self.service
             .snapshot(
                 args.max_depth.unwrap_or(6).clamp(1, 12),
@@ -598,10 +598,10 @@ impl ServerHandler for OperatorMcpServer {
 
 pub async fn serve(
     config: OperatorConfig,
-    inspector: AccessibilityInspector,
+    backend: Arc<dyn Backend>,
     operator_service: OperatorService,
 ) -> Result<()> {
-    let router = build_router(&config, inspector, operator_service)?;
+    let router = build_router(&config, backend, operator_service)?;
     let listener = tokio::net::TcpListener::bind(config.bind_addr)
         .await
         .with_context(|| format!("failed to bind stock-operator at {}", config.bind_addr))?;
@@ -614,11 +614,10 @@ pub async fn serve(
 
 pub(crate) fn build_router(
     config: &OperatorConfig,
-    inspector: AccessibilityInspector,
+    backend: Arc<dyn Backend>,
     operator_service: OperatorService,
 ) -> Result<Router> {
-    let server =
-        OperatorMcpServer::new(inspector.clone(), operator_service.clone(), config.clone());
+    let server = OperatorMcpServer::new(backend, operator_service.clone(), config.clone());
     let service = StreamableHttpService::new(
         move || Ok::<_, std::io::Error>(server.clone()),
         LocalSessionManager::default().into(),
@@ -712,18 +711,18 @@ mod tests {
 
     use super::build_router;
     use crate::{
-        ax::AccessibilityInspector, config::OperatorConfig, operator_service::OperatorService,
-        storage::Storage,
+        backend::Backend, config::OperatorConfig, operator_service::OperatorService,
+        storage::Storage, win_backend::WinStub,
     };
 
     #[tokio::test]
     async fn http_auth_boundary_keeps_health_and_openapi_public() {
         let mut config = OperatorConfig::from_env().unwrap();
         config.auth_token = Some("test-token".to_string());
-        let inspector = AccessibilityInspector::new(config.clone());
+        let backend: Arc<dyn Backend> = Arc::new(WinStub::new());
         let storage = Arc::new(Storage::open_in_memory().unwrap());
-        let service = OperatorService::new(inspector.clone(), storage);
-        let app = build_router(&config, inspector, service).unwrap();
+        let service = OperatorService::new(backend.clone(), storage);
+        let app = build_router(&config, backend, service).unwrap();
 
         for path in ["/healthz", "/api/openapi.json"] {
             let response = app

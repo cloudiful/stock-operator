@@ -1,19 +1,10 @@
 mod business;
 mod cancel_order;
-mod helpers;
-mod mouse;
 mod navigation;
 mod ocr;
-pub(crate) mod ocr_navigation;
-mod ocr_table;
-mod panel_ocr;
-mod panel_reader;
-mod positions_ocr;
 mod reader;
-mod security_selection;
 mod stage_order;
 mod stage_order_validation;
-mod submit_order;
 mod trade_preflight;
 #[cfg(test)]
 mod trade_preflight_tests;

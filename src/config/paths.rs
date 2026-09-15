@@ -14,11 +14,9 @@ pub fn resolve_db_path() -> PathBuf {
 }
 
 pub fn default_db_path() -> PathBuf {
-    if let Ok(home) = env::var("HOME") {
-        if !home.trim().is_empty() {
-            return Path::new(&home)
-                .join("Library")
-                .join("Application Support")
+    if let Ok(appdata) = env::var("APPDATA") {
+        if !appdata.trim().is_empty() {
+            return Path::new(&appdata)
                 .join("Stock Operator")
                 .join("operator.sqlite3");
         }
@@ -27,6 +25,15 @@ pub fn default_db_path() -> PathBuf {
         if !xdg.trim().is_empty() {
             return Path::new(&xdg)
                 .join("stock-operator")
+                .join("operator.sqlite3");
+        }
+    }
+    if let Ok(home) = env::var("HOME") {
+        if !home.trim().is_empty() {
+            return Path::new(&home)
+                .join("Library")
+                .join("Application Support")
+                .join("Stock Operator")
                 .join("operator.sqlite3");
         }
     }

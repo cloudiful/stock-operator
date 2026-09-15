@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::ax::AccessibilityStatus;
+use crate::backend::BackendStatus;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct RuntimeStatus {
@@ -27,14 +27,14 @@ pub struct AccessibilityStatusDto {
     pub notes: Vec<String>,
 }
 
-impl From<AccessibilityStatus> for AccessibilityStatusDto {
-    fn from(s: AccessibilityStatus) -> Self {
+impl From<BackendStatus> for AccessibilityStatusDto {
+    fn from(s: BackendStatus) -> Self {
         Self {
-            api_enabled: s.api_enabled,
-            process_trusted: s.process_trusted,
+            api_enabled: true,
+            process_trusted: s.target_found && !s.version_low_detected,
             target_process_name: s.target_process_name,
-            target_bundle_id: s.target_bundle_id,
-            target_pid: s.target_pid,
+            target_bundle_id: String::new(),
+            target_pid: s.target_pid.and_then(|pid| i32::try_from(pid).ok()),
             target_found: s.target_found,
             notes: s.notes,
         }

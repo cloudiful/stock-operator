@@ -8,7 +8,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
-    ax::{AccessibilityInspector, TargetSnapshot},
+    backend::Backend,
     pages::{
         CancellationTarget, NavigationResult, NavigationTarget, PageReader, StageOrderRequest,
         StageOrderResult, TradePreflightRequest, TradePreflightResult, ViewDescriptor,
@@ -17,17 +17,14 @@ use crate::{
 };
 
 pub use crate::operator_types::{
-    AuditEventResponse, AuditHistoryResponse, ConfirmOperationRequest, LiveOperationResponse,
-    OperationHistoryEntry, OperationHistoryResponse, OperatorError, PrepareCancellationRequest,
-    PrepareOrderRequest,
+    AuditEventResponse, AuditHistoryResponse, LiveOperationResponse, OperationHistoryEntry,
+    OperationHistoryResponse, OperatorError,
 };
 pub use crate::storage::{LiveOperationKind, LiveOperationState};
 
-use chrono::{DateTime, Utc};
-
 #[derive(Clone)]
 pub struct OperatorService {
-    pub(crate) inspector: AccessibilityInspector,
+    pub(crate) backend: Arc<dyn Backend>,
     pub(crate) pages: PageReader,
     pub(crate) ui_lock: Arc<Mutex<()>>,
     pub(crate) storage: Arc<Storage>,
@@ -64,10 +61,10 @@ pub struct SelectSecurityRequest {
 }
 
 impl OperatorService {
-    pub fn new(inspector: AccessibilityInspector, storage: Arc<Storage>) -> Self {
+    pub fn new(backend: Arc<dyn Backend>, storage: Arc<Storage>) -> Self {
         Self {
-            pages: PageReader::new(inspector.clone()),
-            inspector,
+            pages: PageReader::new(backend.clone()),
+            backend,
             ui_lock: Arc::new(Mutex::new(())),
             storage,
             confirmation_tokens: Arc::new(Mutex::new(HashMap::new())),
@@ -75,14 +72,15 @@ impl OperatorService {
     }
 
     #[cfg(test)]
-    pub fn new_in_memory(inspector: AccessibilityInspector) -> Self {
+    #[allow(dead_code)]
+    pub fn new_in_memory(backend: Arc<dyn Backend>) -> Self {
         let storage = Storage::open_in_memory().expect("in-memory storage");
-        Self::new(inspector, Arc::new(storage))
+        Self::new(backend, Arc::new(storage))
     }
 
-    pub async fn snapshot(&self, max_depth: usize, max_nodes: usize) -> Result<TargetSnapshot> {
+    pub async fn snapshot(&self, max_depth: usize, max_nodes: usize) -> Result<serde_json::Value> {
         let _guard = self.ui_lock.lock().await;
-        self.inspector.snapshot(max_depth, max_nodes)
+        self.backend.snapshot(max_depth, max_nodes)
     }
 
     pub async fn with_ui<T>(&self, operation: impl FnOnce(&PageReader) -> Result<T>) -> Result<T> {

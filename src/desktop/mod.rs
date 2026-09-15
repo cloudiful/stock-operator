@@ -1,22 +1,15 @@
-#[cfg(target_os = "macos")]
 pub mod keychain;
-#[cfg(target_os = "macos")]
 pub mod server;
-#[cfg(target_os = "macos")]
 pub mod settings;
-#[cfg(target_os = "macos")]
 pub mod status;
-#[cfg(target_os = "macos")]
 pub mod validation;
 
-#[cfg(target_os = "macos")]
 pub use server::{AppState, spawn_background_server};
 
 // ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
 
-#[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn get_settings(
     state: tauri::State<'_, AppState>,
@@ -24,7 +17,6 @@ pub async fn get_settings(
     settings::load_public_settings(state.storage.as_ref())
 }
 
-#[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn save_settings(
     state: tauri::State<'_, AppState>,
@@ -51,7 +43,6 @@ pub async fn save_settings(
     Ok(resp)
 }
 
-#[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn get_runtime_status(
     state: tauri::State<'_, AppState>,
@@ -59,8 +50,7 @@ pub async fn get_runtime_status(
     let cfg = state.config.lock().await.clone();
     let server = state.server_state.lock().await.clone();
     let token = keychain::token_status();
-    let inspector = crate::ax::AccessibilityInspector::new(state.initial_config.clone());
-    let accessibility = inspector.status();
+    let accessibility = state.service.backend.status();
     let (restart_required, restart_reasons) =
         status::check_restart_required(state.storage.as_ref(), &state.initial_config);
     let instance_id = state
@@ -84,7 +74,6 @@ pub async fn get_runtime_status(
     })
 }
 
-#[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn get_token_status(
     _state: tauri::State<'_, AppState>,
@@ -92,7 +81,6 @@ pub async fn get_token_status(
     Ok(keychain::token_status())
 }
 
-#[cfg(target_os = "macos")]
 fn env_token_present() -> bool {
     std::env::var("STOCK_OPERATOR_AUTH_TOKEN")
         .ok()
@@ -100,7 +88,6 @@ fn env_token_present() -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn save_token(
     state: tauri::State<'_, AppState>,
@@ -122,7 +109,6 @@ pub async fn save_token(
     Ok(keychain::token_status())
 }
 
-#[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn clear_token(
     state: tauri::State<'_, AppState>,
@@ -141,7 +127,6 @@ pub async fn clear_token(
     Ok(keychain::token_status())
 }
 
-#[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn test_stock_service_url(url: String) -> Result<status::TestConnectionResult, String> {
     let trimmed = url.trim().to_string();
@@ -185,7 +170,6 @@ pub async fn test_stock_service_url(url: String) -> Result<status::TestConnectio
     }
 }
 
-#[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn list_operations(
     state: tauri::State<'_, AppState>,
@@ -216,7 +200,6 @@ pub async fn list_operations(
         .map_err(|e| e.to_string())
 }
 
-#[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn list_audit_events(
     state: tauri::State<'_, AppState>,
@@ -240,7 +223,6 @@ pub async fn list_audit_events(
 /// The operator must have verified the broker confirmation dialog is closed, then call this
 /// to write a `stale_resolved` audit and move the operation to terminal `aborted` so future
 /// prepares are unblocked. Clears any in-memory confirmation token.
-#[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn resolve_stale_operation(
     state: tauri::State<'_, AppState>,
@@ -293,12 +275,9 @@ pub async fn resolve_stale_operation(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(target_os = "macos")]
     use super::settings::{SaveSettingsRequest, load_public_settings, save_public_settings};
-    #[cfg(target_os = "macos")]
     use crate::storage::Storage;
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn desktop_round_trip_preserves_restart_flag() {
         let storage = Storage::open_in_memory().unwrap();
@@ -333,7 +312,6 @@ mod tests {
         assert!(!json.to_lowercase().contains("bearer"));
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn repeated_save_no_restart_when_unchanged() {
         let storage = Storage::open_in_memory().unwrap();

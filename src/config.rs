@@ -12,8 +12,8 @@ pub use paths::{default_db_path, resolve_db_path};
 
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:5190";
 const DEFAULT_MCP_PATH: &str = "/mcp";
-const DEFAULT_TARGET_BUNDLE_ID: &str = "com.citics.mac.tdx";
-const DEFAULT_TARGET_PROCESS_NAME: &str = "中信证券网上交易";
+const DEFAULT_TARGET_BUNDLE_ID: &str = "";
+pub(crate) const DEFAULT_TARGET_PROCESS_NAME: &str = "xiadan.exe";
 const DEFAULT_MAX_DEPTH: usize = 6;
 const DEFAULT_MAX_NODES: usize = 300;
 
