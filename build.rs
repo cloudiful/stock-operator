@@ -19,6 +19,13 @@ fn main() {
         }
     }
 
+    // Windows images need an embedded manifest to bind Common-Controls v6
+    // (`comctl32`); without it the loader aborts with `0xC0000139`.
+    println!("cargo:rerun-if-changed=app.manifest");
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        embed_windows_manifest();
+    }
+
     println!("cargo:rerun-if-changed=macos/window_ocr.swift");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
@@ -95,4 +102,32 @@ fn main() {
             println!("cargo:warning=stock-operator OCR helper could not be executed: {error}")
         }
     }
+}
+
+/// MSVC only: link `app.manifest` into the binary as its `RT_MANIFEST` resource.
+///
+/// `link.exe` parses `/MANIFESTINPUT` values itself and needs a full path free of
+/// the separators it splits on, so an unusable path degrades to a warning instead
+/// of failing the build.
+fn embed_windows_manifest() {
+    if env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
+        println!("cargo:warning=app.manifest not embedded: target env is not MSVC");
+        return;
+    }
+    let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest dir"));
+    let manifest = manifest_dir.join("app.manifest");
+    if !manifest.is_file() {
+        println!(
+            "cargo:warning=app.manifest not embedded: {} is missing",
+            manifest.display()
+        );
+        return;
+    }
+    let path = manifest.to_string_lossy();
+    if path.contains([',', ';', '=']) {
+        println!("cargo:warning=app.manifest not embedded: linker cannot take path {path}");
+        return;
+    }
+    println!("cargo:rustc-link-arg-bins=/MANIFEST:EMBED");
+    println!("cargo:rustc-link-arg-bins=/MANIFESTINPUT:{path}");
 }

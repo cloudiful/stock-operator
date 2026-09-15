@@ -1,9 +1,10 @@
 //! Windows-only backend for the 恒生/至胜 terminal (`xiadan.exe`).
 //!
-//! Task 2 scope: read-only window discovery, `Static` funds/quotes reads and
-//! the health gate (`mutations_allowed`). Popup dismissal lands in Task 3 and
-//! grid reads in Task 4.
+//! Task 2 scope: read-only window discovery, `Static` funds/quotes reads and the
+//! health gate (`mutations_allowed`). Task 3 adds popup handling (`popups`) and
+//! grid reads land in Task 4.
 
+pub mod popups;
 pub mod read;
 pub mod window;
 
@@ -61,7 +62,7 @@ impl Backend for WinBackend {
     }
 
     fn status(&self) -> BackendStatus {
-        let mut notes = vec![read::BLOCKING_POPUP_PLACEHOLDER_NOTE.to_string()];
+        let mut notes = Vec::new();
         let found = self.find_main_window();
         let (main_hwnd, target_pid) = match &found {
             Ok(handle) => (Some(*handle), window::main_window_pid(*handle)),
@@ -71,10 +72,28 @@ impl Backend for WinBackend {
             }
         };
         let main_window_found = main_hwnd.is_some();
-        let version_low_detected = main_hwnd
+        let mut version_low_detected = main_hwnd
             .map(|handle| read::detect_version_low(&self.scan(handle)))
             .unwrap_or(false);
-        let blocking_popup = read::blocking_popup_detected();
+        // A blocking announcement is dismissed here, so `blocking_popup` reports
+        // what is still on screen after the verified attempt, not what was.
+        let mut blocking_popup = false;
+        if let Some(handle) = main_hwnd {
+            match popups::ensure_no_blocking_popup(handle) {
+                Ok(popups::PopupOutcome::DismissedAnnouncement) => {
+                    notes.push("announcement overlay dismissed (今日不再提示 + 确定)".to_string());
+                }
+                Ok(popups::PopupOutcome::VersionLowBlocksMutations) => {
+                    version_low_detected = true;
+                    notes.push("版本过低 dialog is open: live mutations stay disabled".to_string());
+                }
+                Ok(popups::PopupOutcome::None) => {}
+                Err(error) => {
+                    blocking_popup = true;
+                    notes.push(format!("announcement overlay dismissal failed: {error:#}"));
+                }
+            }
+        }
         BackendStatus {
             backend: self.name(),
             target_process_name: crate::config::DEFAULT_TARGET_PROCESS_NAME.to_string(),

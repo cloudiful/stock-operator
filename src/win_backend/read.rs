@@ -170,15 +170,6 @@ pub fn detect_version_low(windows: &[RawWindow]) -> bool {
         .any(|window| window.visible && window.text.contains(VERSION_LOW_MARKER))
 }
 
-/// Task 2 placeholder for the announcement overlay: the orange `确定` pixel
-/// template lands in Task 3, so no overlay is reported as blocking here.
-pub fn blocking_popup_detected() -> bool {
-    false
-}
-
-pub const BLOCKING_POPUP_PLACEHOLDER_NOTE: &str =
-    "blocking-popup detection is a Task 3 placeholder (no orange-button template yet): reported as not blocked";
-
 #[cfg(test)]
 mod tests {
     use super::*;
