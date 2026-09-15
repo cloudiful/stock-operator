@@ -2,11 +2,14 @@
 //!
 //! Task 2 scope: read-only window discovery, `Static` funds/quotes reads and the
 //! health gate (`mutations_allowed`). Task 3 adds popup handling (`popups`) and
-//! grid reads land in Task 4.
+//! Task 4 adds the clipboard grid reads (`grid`).
 
+pub mod grid;
 pub mod popups;
 pub mod read;
 pub mod window;
+
+pub use grid::{GridPanel, GridTable};
 
 use anyhow::Result;
 
@@ -109,12 +112,16 @@ impl Backend for WinBackend {
 
     fn snapshot(&self, max_depth: usize, max_nodes: usize) -> Result<serde_json::Value> {
         let handle = self.find_main_window()?;
-        let nodes = window::bounded_children(handle, max_nodes.clamp(1, MAX_SCAN_WINDOWS));
-        let statics = read::pair_label_values(&nodes);
+        // The account values are paired from the full bounded scan: `max_nodes`
+        // only trims the node listing, so a small cap can no longer cut the funds
+        // statics away and report them as stale.
+        let scanned = self.scan(handle);
+        let statics = read::pair_label_values(&scanned);
         let root_depth = window::window_depth(handle);
         let depth_limit = root_depth + max_depth.max(1);
-        let visible_nodes: Vec<serde_json::Value> = nodes
+        let visible_nodes: Vec<serde_json::Value> = scanned
             .iter()
+            .take(max_nodes.clamp(1, MAX_SCAN_WINDOWS))
             .filter(|node| node.depth <= depth_limit)
             .map(node_json)
             .collect();
@@ -128,7 +135,7 @@ impl Backend for WinBackend {
             },
             "root_depth": root_depth,
             "depth_limit": depth_limit,
-            "node_count": nodes.len(),
+            "node_count": scanned.len(),
             "nodes": visible_nodes,
             "statics": statics,
             "funds": read::parse_funds(&statics),

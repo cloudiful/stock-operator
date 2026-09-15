@@ -8,46 +8,49 @@ use super::types::{
 };
 use crate::pages::{
     reader::PageReader,
-    types::{DataQuality, ObservedText, TableColumn, TableRow},
+    types::{
+        DataQuality, DataSource, ObservedText, PanelKind, TableColumn, TableRow, WorkspaceKind,
+    },
 };
+use crate::win_backend::GridPanel;
 
 impl PageReader {
     pub fn positions_structured(&self) -> Result<PositionStructuredSnapshot> {
-        let snapshot = self.positions_ocr()?;
-        let (data, quality) = position_table(&snapshot.data.columns, &snapshot.data.rows);
+        let table = self.grid_observed_table(GridPanel::Positions)?;
+        let (data, quality) = position_table(&table.columns, &table.rows);
         Ok(crate::pages::types::snapshot_with_source(
-            snapshot.workspace,
-            snapshot.panel,
+            WorkspaceKind::Unknown,
+            PanelKind::Positions,
             data,
-            quality.min(snapshot.quality),
-            snapshot.source,
-            snapshot.warnings,
+            quality.min(table.quality),
+            DataSource::Accessibility,
+            table.warnings,
         ))
     }
 
     pub fn orders_structured(&self) -> Result<OrderStructuredSnapshot> {
-        let snapshot = self.orders_ocr()?;
-        let (data, quality) = order_table(&snapshot.data.columns, &snapshot.data.rows);
+        let table = self.grid_observed_table(GridPanel::Orders)?;
+        let (data, quality) = order_table(&table.columns, &table.rows);
         Ok(crate::pages::types::snapshot_with_source(
-            snapshot.workspace,
-            snapshot.panel,
+            WorkspaceKind::Unknown,
+            PanelKind::Orders,
             data,
-            quality.min(snapshot.quality),
-            snapshot.source,
-            snapshot.warnings,
+            quality.min(table.quality),
+            DataSource::Accessibility,
+            table.warnings,
         ))
     }
 
     pub fn executions_structured(&self) -> Result<ExecutionStructuredSnapshot> {
-        let snapshot = self.executions_ocr()?;
-        let (data, quality) = execution_table(&snapshot.data.columns, &snapshot.data.rows);
+        let table = self.grid_observed_table(GridPanel::Executions)?;
+        let (data, quality) = execution_table(&table.columns, &table.rows);
         Ok(crate::pages::types::snapshot_with_source(
-            snapshot.workspace,
-            snapshot.panel,
+            WorkspaceKind::Unknown,
+            PanelKind::Executions,
             data,
-            quality.min(snapshot.quality),
-            snapshot.source,
-            snapshot.warnings,
+            quality.min(table.quality),
+            DataSource::Accessibility,
+            table.warnings,
         ))
     }
 

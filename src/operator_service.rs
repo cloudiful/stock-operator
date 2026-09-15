@@ -130,18 +130,21 @@ impl OperatorService {
             _ => ReadRepresentation::Structured,
         });
         match (request.panel, representation) {
+            // 持仓/委托/成交 are owner-drawn grids: `ax` and `structured` both come
+            // from the clipboard TSV read (`win_backend::grid`), which only sends
+            // `Tab`/`Ctrl+A`/`Ctrl+C` and never a click, `Enter` or panel shortcut.
             (ReadPanel::Positions, ReadRepresentation::Ax) => json(self.pages.positions()?),
-            (ReadPanel::Positions, ReadRepresentation::Ocr) => json(self.pages.positions_ocr()?),
+            (ReadPanel::Positions, ReadRepresentation::Ocr) => ocr_removed(ReadPanel::Positions),
             (ReadPanel::Positions, ReadRepresentation::Structured) => {
                 json(self.pages.positions_structured()?)
             }
             (ReadPanel::Orders, ReadRepresentation::Ax) => json(self.pages.orders()?),
-            (ReadPanel::Orders, ReadRepresentation::Ocr) => json(self.pages.orders_ocr()?),
+            (ReadPanel::Orders, ReadRepresentation::Ocr) => ocr_removed(ReadPanel::Orders),
             (ReadPanel::Orders, ReadRepresentation::Structured) => {
                 json(self.pages.orders_structured()?)
             }
             (ReadPanel::Executions, ReadRepresentation::Ax) => json(self.pages.executions()?),
-            (ReadPanel::Executions, ReadRepresentation::Ocr) => json(self.pages.executions_ocr()?),
+            (ReadPanel::Executions, ReadRepresentation::Ocr) => ocr_removed(ReadPanel::Executions),
             (ReadPanel::Executions, ReadRepresentation::Structured) => {
                 json(self.pages.executions_structured()?)
             }
@@ -345,4 +348,12 @@ pub(crate) fn to_response(
 
 fn json(value: impl Serialize) -> Result<serde_json::Value> {
     Ok(serde_json::to_value(value)?)
+}
+
+/// The macOS Vision OCR layer was deleted with the macOS backend, so the OCR
+/// representation must fail loudly instead of looking like an unfinished stub.
+fn ocr_removed(panel: ReadPanel) -> Result<serde_json::Value> {
+    anyhow::bail!(
+        "OCR is unavailable: the macOS layer was removed; read {panel:?} with ax or structured (focused-grid clipboard read)"
+    )
 }
